@@ -1,0 +1,26 @@
+MACROCAMERA by Pino Settino - fotocamera macro per Android (Camera2, nessun browser)
+
+STATO DEL PROGETTO (per riprendere il lavoro)
+- Repository GitHub: pinosettino/cameramacro  (build automatica con Actions -> artefatto MacroCam-apk)
+- File da aggiornare: app/src/main/java/it/macrocam/MainActivity.kt
+  (AndroidManifest.xml in app/src/main solo se cambiano i permessi)
+- Firma fissa (app/macrocamera.keystore, password: macrocamera): dalla versione 2.0 gli aggiornamenti
+  si installano sopra la versione presente. NON cambiare/cancellare il file di chiave, altrimenti
+  bisogna disinstallare di nuovo. Con adb: adb install -r nomefile.apk
+- HTC U11: l'installazione dal telefono fallisce; si installa col PC:
+    cd /d C:\adb\platform-tools
+    adb uninstall it.macrocam
+    adb install camera4.apk        (adb versione 2021, quella nuova non gira su Windows 7)
+
+FUNZIONI
+- Slider fuoco (100 cm -> minimo), luminosita', ISO 50/100/200/400/auto, bilanciamento bianco
+  (barra blu-giallo, AUTO / BLOCCATO), MACRO attivabile/disattivabile.
+- Finestra mobile: riquadro che mostra l'area che verra' ingrandita; si sposta toccando o trascinando sull'anteprima.
+- Zoom sulla finestra mentre muovi lo slider del fuoco: resta finche non tocchi lo schermo.
+- Pallino sotto la manopola del fuoco: porta l'ingrandimento da 5x a 10x (al massimo che il telefono permette); ripremendolo si torna a 5x.
+  Toccare lo schermo toglie lo zoom ma il pallino resta com'e'.
+- Impostazioni > distanza minima di fuoco: 1.0x / 0.7x / 0.55x della distanza dichiarata dal telefono.
+  Misure: Galaxy S9 = 0.55x (sharp a 5.5 cm); Galaxy S20 e HTC U11 = 1.0x (il telefono limita, nitido da ~9 cm).
+- (Focus peaking provato e tolto: non distingueva bene il fuoco.)
+- Scatto a rumore vocale (Impostazioni): parte con un suono netto ("pop", "tac"); sensibilita bassa/media/alta.
+- Foto a risoluzione massima, JPEG qualita 100, in Pictures/Macro o nella cartella scelta.
