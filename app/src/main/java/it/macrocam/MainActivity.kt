@@ -36,6 +36,7 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.ColorSpaceTransform
+import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.RggbChannelVector
 import android.media.AudioFormat
 import android.media.AudioRecord
@@ -443,6 +444,11 @@ class MainActivity : Activity() {
     private var prev = Size(0, 0)
     private var minFocus = 0f
     private var manualFocus = false
+    private var afMacroOk = false      // il telefono dichiara CONTROL_AF_MODE_MACRO
+    private var maxAfRegions = 0
+    @Volatile private var afState = -1
+    /** Telefoni senza fuoco manuale (es. fotocamere LEGACY): si usa l'autofocus in modalità macro. */
+    private val afAssist: Boolean get() = macroOn && !manualFocus && afMacroOk
     private var manualOk = false
     private var wbOk = false
     private var awbLockOk = false
@@ -562,14 +568,23 @@ class MainActivity : Activity() {
         super.onPause()
     }
 
+    // Su Android 5.x (API 22) i permessi si concedono all'installazione e queste API non esistono:
+    // chiamarle direttamente causa NoSuchMethodError e crash immediato.
+    private fun has(p: String): Boolean =
+        Build.VERSION.SDK_INT < 23 || checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
+
+    private fun askRuntime(p: Array<String>, code: Int) {
+        if (Build.VERSION.SDK_INT >= 23) requestPermissions(p, code)
+    }
+
     private fun askPerms() {
         val need = ArrayList<String>()
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
+        if (!has(Manifest.permission.CAMERA))
             need.add(Manifest.permission.CAMERA)
         if (Build.VERSION.SDK_INT < 29 &&
-            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+            !has(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         ) need.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-        if (need.isNotEmpty()) requestPermissions(need.toTypedArray(), 1)
+        if (need.isNotEmpty()) askRuntime(need.toTypedArray(), 1)
     }
 
     override fun onRequestPermissionsResult(rc: Int, p: Array<out String>, r: IntArray) {
@@ -579,7 +594,7 @@ class MainActivity : Activity() {
             else { setVmode(0); toast("Serve il permesso del microfono") }
             return
         }
-        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+        if (has(Manifest.permission.CAMERA)) {
             if (tv.isAvailable) openCamera()
         } else toast("Serve il permesso della fotocamera")
     }
@@ -676,6 +691,7 @@ class MainActivity : Activity() {
                 MotionEvent.ACTION_MOVE -> if (!zoomed && !downZoomed) movePoint(e)
                 MotionEvent.ACTION_UP -> {
                     if (downZoomed && zoomed && abs(e.x - dx0) < dpf(24) && abs(e.y - dy0) < dpf(24)) zoomOffR.run()
+                    else if (!downZoomed && afAssist) triggerAf()
                     downZoomed = false
                 }
             }
@@ -827,6 +843,7 @@ class MainActivity : Activity() {
         if (!on) { ui.removeCallbacks(zoomOffR); zoomed = false }
         updateReticle()
         update()
+        if (on && afAssist) triggerAf()
     }
 
     private fun updateReticle() {
@@ -953,7 +970,7 @@ class MainActivity : Activity() {
     }
 
     private fun focusLine(): String {
-        if (!manualFocus) return "Fuoco: autofocus"
+        if (!manualFocus) return if (afMacroOk) "Fuoco: autofocus macro (tocca per mettere a fuoco)" else "Fuoco: autofocus"
         val req = if (focusD > 0f) 100f / focusD else 0f
         val got = if (gotFocusD > 0f) 100f / gotFocusD else 0f
         val lim = focusD > minFocus * 1.02f && gotFocusD < focusD * 0.97f
@@ -1030,7 +1047,7 @@ class MainActivity : Activity() {
     @SuppressLint("MissingPermission")
     private fun openCamera() {
         if (cam != null || opening || bg == null) return
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return
+        if (!has(Manifest.permission.CAMERA)) return
         val mgr = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         try {
             val backs = mgr.cameraIdList.filter {
@@ -1067,6 +1084,9 @@ class MainActivity : Activity() {
         maxZoom = ch.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
         minFocus = ch.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
         manualFocus = minFocus > 1f
+        afMacroOk = ch.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
+            ?.contains(CameraMetadata.CONTROL_AF_MODE_MACRO) == true
+        maxAfRegions = ch.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
         val caps = ch.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
         manualOk = caps?.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) == true
         wbOk = caps?.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING) == true
@@ -1086,7 +1106,7 @@ class MainActivity : Activity() {
             else -> "?"
         }
         diag = "Fotocamera ID $camId ($lvl) · ${jpeg.width}×${jpeg.height}\n" +
-            "Fuoco manuale: " + (if (manualFocus) "sì, minimo dichiarato " + String.format(Locale.US, "%.1f", 100f / minFocus) + " cm" else "NO (resta autofocus)") + "\n" +
+            "Fuoco manuale: " + (if (manualFocus) "sì, minimo dichiarato " + String.format(Locale.US, "%.1f", 100f / minFocus) + " cm" else if (afMacroOk) "NO (uso autofocus macro)" else "NO (resta autofocus)") + "\n" +
             "ISO manuale: " + (if (manualOk) "sì ($isoMin–$isoMax)" else "NO") + "  ·  bianco manuale: " + (if (wbOk) "sì" else "NO")
 
         runOnUiThread {
@@ -1098,7 +1118,10 @@ class MainActivity : Activity() {
             updateEnds()
             onFocus(sl.f, false)
             onExp(ex.f)
-            if (!manualFocus) toast("Questo telefono non permette il fuoco manuale")
+            if (!manualFocus) {
+                if (afMacroOk) { toast("Niente fuoco manuale: uso l'autofocus macro. Tocca l'anteprima per mettere a fuoco"); triggerAf() }
+                else toast("Questo telefono non permette il fuoco manuale")
+            }
         }
     }
 
@@ -1160,6 +1183,16 @@ class MainActivity : Activity() {
         if (macroOn && manualFocus) {
             b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
             b.set(CaptureRequest.LENS_FOCUS_DISTANCE, focusD)
+        } else if (afAssist) {
+            b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_MACRO)
+            if (maxAfRegions > 0 && arr.width() > 16 && arr.height() > 16) {
+                val (sx, sy) = toSensor(P.x, P.y)
+                val rw = arr.width() / 8
+                val rh = arr.height() / 8
+                val x = (arr.left + sx * arr.width() - rw / 2f).toInt().coerceIn(arr.left, arr.right - rw)
+                val y = (arr.top + sy * arr.height() - rh / 2f).toInt().coerceIn(arr.top, arr.bottom - rh)
+                b.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(MeteringRectangle(x, y, rw, rh, MeteringRectangle.METERING_WEIGHT_MAX)))
+            }
         } else {
             b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
         }
@@ -1193,6 +1226,7 @@ class MainActivity : Activity() {
     private val prevCb = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, res: TotalCaptureResult) {
             lensMoving = res.get(CaptureResult.LENS_STATE) == CameraMetadata.LENS_STATE_MOVING
+            res.get(CaptureResult.CONTROL_AF_STATE)?.let { afState = it }
             res.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { lastExp = it }
             res.get(CaptureResult.SENSOR_SENSITIVITY)?.let { lastIso = it }
             res.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { gotFocusD = it }
@@ -1207,6 +1241,39 @@ class MainActivity : Activity() {
                 ui.post { if (isoVal == 0) showTime(e) }
             }
         }
+    }
+
+    /** Lancia una messa a fuoco singola (usata solo dall'autofocus macro). */
+    private fun triggerAf() {
+        val h = bg ?: return
+        h.post {
+            try {
+                val s = session ?: return@post
+                val c = cam ?: return@post
+                val ps = pSurface ?: return@post
+                if (!afAssist) return@post
+                val b = c.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                b.addTarget(ps)
+                fill(b, zoomed)
+                b.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
+                afState = -1
+                s.capture(b.build(), prevCb, bg)
+            } catch (e: Exception) {
+            }
+        }
+    }
+
+    /** Prima dello scatto: mette a fuoco e aspetta l'esito (max circa 2,5 s), poi scatta. */
+    private fun focusThenFire() {
+        if (!afAssist) { waitLens(0); return }
+        triggerAf()
+        bg?.postDelayed({ waitAf(0) }, 400)
+    }
+
+    private fun waitAf(n: Int) {
+        val done = afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED ||
+            afState == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED
+        if (!done && n < 21) bg?.postDelayed({ waitAf(n + 1) }, 100) else waitLens(0)
     }
 
     private fun update() {
@@ -1242,7 +1309,7 @@ class MainActivity : Activity() {
         vShot = "avviato"
         flashV.alpha = 0.7f
         flashV.animate().alpha(0f).setDuration(250).start()
-        bg?.post { waitLens(0) }
+        bg?.post { focusThenFire() }
     }
 
     private fun waitLens(n: Int) {
@@ -1400,8 +1467,8 @@ class MainActivity : Activity() {
     @SuppressLint("MissingPermission")
     private fun startNoise() {
         if (!noiseOn || noiseRun) return
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 2)
+        if (!has(Manifest.permission.RECORD_AUDIO)) {
+            askRuntime(arrayOf(Manifest.permission.RECORD_AUDIO), 2)
             return
         }
         val rate = 16000
