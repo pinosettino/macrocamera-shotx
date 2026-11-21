@@ -1125,7 +1125,8 @@ class MainActivity : Activity() {
         val caps = ch.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
         manualOk = caps?.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) == true
         wbOk = caps?.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING) == true
-        awbLockOk = ch.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true
+        // CONTROL_AWB_LOCK_AVAILABLE esiste solo da Android 6 (API 23): su 5.1 darebbe NoSuchFieldError
+        awbLockOk = if (Build.VERSION.SDK_INT >= 23) ch.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true else false
         ch.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)?.let { isoMin = it.lower; isoMax = it.upper }
         ch.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)?.let { expMin = it.lower; expMax = it.upper }
         aeStep = ch.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toFloat() ?: 0f
