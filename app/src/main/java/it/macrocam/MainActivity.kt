@@ -447,6 +447,7 @@ class MainActivity : Activity() {
     private var afMacroOk = false      // il telefono dichiara CONTROL_AF_MODE_MACRO
     private var afAutoOk = false       // il telefono dichiara CONTROL_AF_MODE_AUTO
     private val afModeOk: Boolean get() = afMacroOk || afAutoOk
+    private var afShot = false         // impostazione: rilancia l'autofocus dentro la richiesta di scatto
     private var afNormal = false       // impostazione: autofocus normale invece di macro (se il telefono ha entrambi)
     private val afModeVal: Int get() =
         if (afMacroOk && !(afNormal && afAutoOk)) CameraMetadata.CONTROL_AF_MODE_MACRO else CameraMetadata.CONTROL_AF_MODE_AUTO
@@ -578,6 +579,7 @@ class MainActivity : Activity() {
         minMul = MULS[prefs.getInt("minf", 0).coerceIn(0, MULS.size - 1)]
         vmode = prefs.getInt("vmode", 0)
         afNormal = prefs.getBoolean("afnormal", false)
+        afShot = prefs.getBoolean("afshot", false)
         nSens = prefs.getInt("nsens", 1)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.statusBarColor = Color.BLACK
@@ -1396,6 +1398,7 @@ class MainActivity : Activity() {
             b.addTarget(rd.surface)
             fill(b, false)
             b.set(CaptureRequest.JPEG_QUALITY, 100.toByte())
+            if (afAssist && afShot) b.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
             lastJpegOri = (sensorOri + devOri) % 360
             afInfo = "prima dello scatto: " + afName(afState) + ", lente " + focCm(gotFocusD) + (if (shotWasZoomed) " (era in zoom)" else "")
             b.set(CaptureRequest.JPEG_ORIENTATION, lastJpegOri)
@@ -1676,6 +1679,13 @@ class MainActivity : Activity() {
                 text = "Se con la macro il fuoco non si aggancia da vicino, prova «Normale»."
                 setTextColor(0xFF9A9AA0.toInt()); textSize = 11f; setPadding(0, dp(4), 0, 0)
             })
+            box.addView(label("SCATTO: SE LA FOTO ESCE SFOCATA ANCHE CON ANTEPRIMA A FUOCO"))
+            fun setShot(v: Boolean) {
+                afShot = v
+                prefs.edit().putBoolean("afshot", v).apply()
+                fillSettings(box)
+            }
+            box.addView(row(btn("Standard", !afShot) { setShot(false) }, btn("Rifocus nello scatto", afShot) { setShot(true) }))
         }
 
         box.addView(label("SCATTO A RUMORE VOCALE"))
