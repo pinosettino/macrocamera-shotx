@@ -447,6 +447,7 @@ class MainActivity : Activity() {
     private var afMacroOk = false      // il telefono dichiara CONTROL_AF_MODE_MACRO
     private var afAutoOk = false       // il telefono dichiara CONTROL_AF_MODE_AUTO
     private val afModeOk: Boolean get() = afMacroOk || afAutoOk
+    private var prevShot = false       // impostazione: salva il fotogramma dell'anteprima (a fuoco) invece dello scatto del driver
     private var afShot = false         // impostazione: rilancia l'autofocus dentro la richiesta di scatto
     private var afNormal = false       // impostazione: autofocus normale invece di macro (se il telefono ha entrambi)
     private val afModeVal: Int get() =
@@ -580,6 +581,7 @@ class MainActivity : Activity() {
         vmode = prefs.getInt("vmode", 0)
         afNormal = prefs.getBoolean("afnormal", false)
         afShot = prefs.getBoolean("afshot", false)
+        prevShot = prefs.getBoolean("prevshot", false)
         nSens = prefs.getInt("nsens", 1)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.statusBarColor = Color.BLACK
@@ -1390,6 +1392,7 @@ class MainActivity : Activity() {
     }
 
     private fun fire() {
+        if (prevShot) { firePreview(); return }
         try {
             val c = cam ?: throw IllegalStateException("camera chiusa")
             val s = session ?: throw IllegalStateException("sessione chiusa")
@@ -1431,7 +1434,40 @@ class MainActivity : Activity() {
         val bytes = ByteArray(buf.remaining())
         buf.get(bytes)
         img.close()
-        val ori = lastJpegOri
+        finishSave(bytes, lastJpegOri)
+    }
+
+    /** Scatto "da anteprima": salva il fotogramma che si vede (a fuoco), a risoluzione più bassa del sensore. */
+    private fun firePreview() {
+        afInfo = "da anteprima" + (if (shotWasZoomed) " (era in zoom)" else "")
+        ui.post {
+            try {
+                val bm = tv.getBitmap(prev.height, prev.width) ?: throw IllegalStateException("anteprima non disponibile")
+                val rot = devOri
+                restoreZoom()
+                bg?.post {
+                    try {
+                        val m = Matrix().apply { postRotate(rot.toFloat()) }
+                        val out = if (rot != 0) Bitmap.createBitmap(bm, 0, 0, bm.width, bm.height, m, true) else bm
+                        val bos = java.io.ByteArrayOutputStream()
+                        out.compress(Bitmap.CompressFormat.JPEG, 97, bos)
+                        finishSave(bos.toByteArray(), 0)
+                    } catch (e: Exception) {
+                        busy = false
+                        vShot = "errore: ${e.message}"
+                        toast("Scatto: ${e.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                busy = false
+                restoreZoom()
+                vShot = "errore: ${e.message}"
+                toast("Scatto: ${e.message}")
+            }
+        }
+    }
+
+    private fun finishSave(bytes: ByteArray, ori: Int) {
         val uri = try { saveJpeg(bytes) } catch (e: Exception) { null }
         val th = makeThumb(bytes, ori)
         vShot = if (uri == null) "salvataggio fallito" else "foto salvata"
@@ -1680,12 +1716,21 @@ class MainActivity : Activity() {
                 setTextColor(0xFF9A9AA0.toInt()); textSize = 11f; setPadding(0, dp(4), 0, 0)
             })
             box.addView(label("SCATTO: SE LA FOTO ESCE SFOCATA ANCHE CON ANTEPRIMA A FUOCO"))
-            fun setShot(v: Boolean) {
-                afShot = v
-                prefs.edit().putBoolean("afshot", v).apply()
+            fun setShot(m: Int) {
+                afShot = m == 1
+                prevShot = m == 2
+                prefs.edit().putBoolean("afshot", afShot).putBoolean("prevshot", prevShot).apply()
                 fillSettings(box)
             }
-            box.addView(row(btn("Standard", !afShot) { setShot(false) }, btn("Rifocus nello scatto", afShot) { setShot(true) }))
+            box.addView(row(
+                btn("Standard", !afShot && !prevShot) { setShot(0) },
+                btn("Rifocus nello scatto", afShot) { setShot(1) },
+                btn("Da anteprima", prevShot) { setShot(2) }
+            ))
+            box.addView(TextView(this).apply {
+                text = "«Da anteprima» salva ciò che vedi (a fuoco) ma a risoluzione ridotta, circa " + prev.height + "×" + prev.width + "."
+                setTextColor(0xFF9A9AA0.toInt()); textSize = 11f; setPadding(0, dp(4), 0, 0)
+            })
         }
 
         box.addView(label("SCATTO A RUMORE VOCALE"))
