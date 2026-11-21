@@ -513,6 +513,15 @@ class MainActivity : Activity() {
     @Volatile private var nHits = 0
 
     @Volatile private var vShot = "nessuno"
+    @Volatile private var afInfo = "nessuno"
+
+    private fun afName(i: Int?): String = when (i) {
+        0 -> "inattivo"; 1 -> "cerca(passivo)"; 2 -> "a fuoco(passivo)"; 3 -> "cerca"
+        4 -> "A FUOCO"; 5 -> "NON a fuoco"; 6 -> "non a fuoco(passivo)"; null -> "?"; else -> "stato $i"
+    }
+
+    private fun focCm(d: Float?): String =
+        if (d == null) "?" else if (d <= 0.01f) "∞" else String.format(Locale.US, "%.1f cm", 100f / d)
     private var busySince = 0L
     private var voiceDiagTv: TextView? = null
     private val diagTick = object : Runnable {
@@ -1158,7 +1167,8 @@ class MainActivity : Activity() {
         }
         diag = "Fotocamera ID $camId ($lvl) · ${jpeg.width}×${jpeg.height}\n" +
             "Fuoco manuale: " + (if (manualFocus) "sì, minimo dichiarato " + String.format(Locale.US, "%.1f", 100f / minFocus) + " cm" else if (afMacroOk && !(afNormal && afAutoOk)) "NO (uso autofocus macro)" else if (afAutoOk) "NO (uso autofocus a scatto singolo)" else "NO (resta autofocus)") + "\n" +
-            "ISO manuale: " + (if (manualOk) "sì ($isoMin–$isoMax)" else "NO") + "  ·  bianco manuale: " + (if (wbOk) "sì" else "NO")
+            "ISO manuale: " + (if (manualOk) "sì ($isoMin–$isoMax)" else "NO") + "  ·  bianco manuale: " + (if (wbOk) "sì" else "NO") + "\n" +
+            "Zone di fuoco supportate: $maxAfRegions"
 
         runOnUiThread {
             tv.setAspect(prev.height, prev.width)
@@ -1387,10 +1397,13 @@ class MainActivity : Activity() {
             fill(b, false)
             b.set(CaptureRequest.JPEG_QUALITY, 100.toByte())
             lastJpegOri = (sensorOri + devOri) % 360
+            afInfo = "prima dello scatto: " + afName(afState) + ", lente " + focCm(gotFocusD) + (if (shotWasZoomed) " (era in zoom)" else "")
             b.set(CaptureRequest.JPEG_ORIENTATION, lastJpegOri)
             s.capture(b.build(), object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, res: TotalCaptureResult) {
                     if (vShot == "avviato") vShot = "scatto eseguito, salvo…"
+                    afInfo += " → durante: " + afName(res.get(CaptureResult.CONTROL_AF_STATE)) + ", lente " +
+                        focCm(res.get(CaptureResult.LENS_FOCUS_DISTANCE))
                     restoreZoom()
                 }
                 override fun onCaptureFailed(s: CameraCaptureSession, r: CaptureRequest, f: CaptureFailure) {
@@ -1502,7 +1515,7 @@ class MainActivity : Activity() {
     /** Pannello in tempo reale nelle impostazioni: fuoco richiesto/applicato e, se attivo, il livello del rumore. */
     private fun refreshVoiceDiag() {
         val t = voiceDiagTv ?: return
-        val sb = StringBuilder(focusLine()).append("\n").append(zoomLine())
+        val sb = StringBuilder(focusLine()).append("\n").append(zoomLine()).append("\nUltimo scatto, fuoco: ").append(afInfo)
         if (vmode == 2) {
             val lvl = ((nLevel / max(1f, nThr)) * 10f).roundToInt().coerceIn(0, 10)
             sb.append("\nRumore: ").append("█".repeat(lvl)).append("░".repeat(10 - lvl)).append("  (pieno = scatta)")
