@@ -445,10 +445,15 @@ class MainActivity : Activity() {
     private var minFocus = 0f
     private var manualFocus = false
     private var afMacroOk = false      // il telefono dichiara CONTROL_AF_MODE_MACRO
+    private var afAutoOk = false       // il telefono dichiara CONTROL_AF_MODE_AUTO
+    private val afModeOk: Boolean get() = afMacroOk || afAutoOk
+    private var afNormal = false       // impostazione: autofocus normale invece di macro (se il telefono ha entrambi)
+    private val afModeVal: Int get() =
+        if (afMacroOk && !(afNormal && afAutoOk)) CameraMetadata.CONTROL_AF_MODE_MACRO else CameraMetadata.CONTROL_AF_MODE_AUTO
     private var maxAfRegions = 0
     @Volatile private var afState = -1
     /** Telefoni senza fuoco manuale (es. fotocamere LEGACY): si usa l'autofocus in modalità macro. */
-    private val afAssist: Boolean get() = macroOn && !manualFocus && afMacroOk
+    private val afAssist: Boolean get() = macroOn && !manualFocus && afModeOk
     private var manualOk = false
     private var wbOk = false
     private var awbLockOk = false
@@ -563,6 +568,7 @@ class MainActivity : Activity() {
         prefs = getSharedPreferences("macro", MODE_PRIVATE)
         minMul = MULS[prefs.getInt("minf", 0).coerceIn(0, MULS.size - 1)]
         vmode = prefs.getInt("vmode", 0)
+        afNormal = prefs.getBoolean("afnormal", false)
         nSens = prefs.getInt("nsens", 1)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.statusBarColor = Color.BLACK
@@ -1002,7 +1008,7 @@ class MainActivity : Activity() {
     }
 
     private fun focusLine(): String {
-        if (!manualFocus) return if (afMacroOk) "Fuoco: autofocus macro (tocca per mettere a fuoco)" else "Fuoco: autofocus"
+        if (!manualFocus) return if (afMacroOk && !(afNormal && afAutoOk)) "Fuoco: autofocus macro (tocca per mettere a fuoco)" else if (afAutoOk) "Fuoco: autofocus a scatto singolo (tocca per mettere a fuoco)" else "Fuoco: autofocus"
         val req = if (focusD > 0f) 100f / focusD else 0f
         val got = if (gotFocusD > 0f) 100f / gotFocusD else 0f
         val lim = focusD > minFocus * 1.02f && gotFocusD < focusD * 0.97f
@@ -1011,6 +1017,13 @@ class MainActivity : Activity() {
     }
 
     private var zoomHint = false
+    @Volatile private var shotWasZoomed = false
+
+    private fun restoreZoom() {
+        if (!shotWasZoomed) return
+        shotWasZoomed = false
+        ui.post { if (macroOn) { zoomed = true; updateReticle(); update() } }
+    }
 
     private fun zoomOn() {
         if (afAssist && !zoomHint) { zoomHint = true; toast("Tocca = mette a fuoco · doppio tocco = esci dallo zoom") }
@@ -1121,6 +1134,8 @@ class MainActivity : Activity() {
         manualFocus = minFocus > 1f
         afMacroOk = ch.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
             ?.contains(CameraMetadata.CONTROL_AF_MODE_MACRO) == true
+        afAutoOk = ch.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
+            ?.contains(CameraMetadata.CONTROL_AF_MODE_AUTO) == true
         maxAfRegions = ch.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
         val caps = ch.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
         manualOk = caps?.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) == true
@@ -1142,7 +1157,7 @@ class MainActivity : Activity() {
             else -> "?"
         }
         diag = "Fotocamera ID $camId ($lvl) · ${jpeg.width}×${jpeg.height}\n" +
-            "Fuoco manuale: " + (if (manualFocus) "sì, minimo dichiarato " + String.format(Locale.US, "%.1f", 100f / minFocus) + " cm" else if (afMacroOk) "NO (uso autofocus macro)" else "NO (resta autofocus)") + "\n" +
+            "Fuoco manuale: " + (if (manualFocus) "sì, minimo dichiarato " + String.format(Locale.US, "%.1f", 100f / minFocus) + " cm" else if (afMacroOk && !(afNormal && afAutoOk)) "NO (uso autofocus macro)" else if (afAutoOk) "NO (uso autofocus a scatto singolo)" else "NO (resta autofocus)") + "\n" +
             "ISO manuale: " + (if (manualOk) "sì ($isoMin–$isoMax)" else "NO") + "  ·  bianco manuale: " + (if (wbOk) "sì" else "NO")
 
         runOnUiThread {
@@ -1150,12 +1165,12 @@ class MainActivity : Activity() {
             reticle.setAspect(prev.height, prev.width)
             wb.alpha = if (wbOk) 1f else 0.35f
             styleIso()
-            sl.showDot = manualFocus || afMacroOk
+            sl.showDot = manualFocus || afModeOk
             updateEnds()
             onFocus(sl.f, false)
             onExp(ex.f)
             if (!manualFocus) {
-                if (afMacroOk) { toast("Niente fuoco manuale: uso l'autofocus macro. Tocca l'anteprima per mettere a fuoco"); triggerAf() }
+                if (afModeOk) { toast("Niente fuoco manuale: uso l'autofocus. Tocca l'anteprima per mettere a fuoco"); triggerAf() }
                 else toast("Questo telefono non permette il fuoco manuale")
             }
         }
@@ -1220,7 +1235,7 @@ class MainActivity : Activity() {
             b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
             b.set(CaptureRequest.LENS_FOCUS_DISTANCE, focusD)
         } else if (afAssist) {
-            b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_MACRO)
+            b.set(CaptureRequest.CONTROL_AF_MODE, afModeVal)
             if (maxAfRegions > 0 && arr.width() > 16 && arr.height() > 16) {
                 val (sx, sy) = toSensor(P.x, P.y)
                 val rw = arr.width() / 8
@@ -1302,6 +1317,8 @@ class MainActivity : Activity() {
     /** Prima dello scatto: mette a fuoco e aspetta l'esito (max circa 2,5 s), poi scatta. */
     private fun focusThenFire() {
         if (!afAssist) { waitLens(0); return }
+        // già a fuoco (tocco precedente): non rilanciare l'autofocus, rischia di perdere il fuoco appena preso
+        if (afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED && !shotWasZoomed) { waitLens(0); return }
         triggerAf()
         bg?.postDelayed({ waitAf(0) }, 400)
     }
@@ -1345,7 +1362,15 @@ class MainActivity : Activity() {
         vShot = "avviato"
         flashV.alpha = 0.7f
         flashV.animate().alpha(0f).setDuration(250).start()
-        bg?.post { focusThenFire() }
+        if (afAssist && zoomed) {
+            // con lo zoom attivo lo scatto è a campo intero e il driver rifocalizza: si scatta nelle stesse condizioni
+            // in cui senza zoom la foto è nitida (fuori zoom, fuoco preso sul punto della finestra)
+            shotWasZoomed = true
+            zoomed = false
+            updateReticle()
+            update()
+        }
+        bg?.postDelayed({ focusThenFire() }, if (shotWasZoomed) 300L else 0L)
     }
 
     private fun waitLens(n: Int) {
@@ -1366,15 +1391,18 @@ class MainActivity : Activity() {
             s.capture(b.build(), object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, res: TotalCaptureResult) {
                     if (vShot == "avviato") vShot = "scatto eseguito, salvo…"
+                    restoreZoom()
                 }
                 override fun onCaptureFailed(s: CameraCaptureSession, r: CaptureRequest, f: CaptureFailure) {
                     busy = false
+                    restoreZoom()
                     vShot = "scatto fallito"
                     toast("Scatto non riuscito")
                 }
             }, bg)
         } catch (e: Exception) {
             busy = false
+            restoreZoom()
             vShot = "errore: ${e.message}"
             toast("Scatto: ${e.message}")
         }
@@ -1620,6 +1648,22 @@ class MainActivity : Activity() {
             text = "Alcuni telefoni (es. Galaxy S9) vanno oltre il valore dichiarato, altri lo limitano: controlla la riga «Fuoco»."
             setTextColor(0xFF9A9AA0.toInt()); textSize = 11f; setPadding(0, dp(4), 0, 0)
         })
+
+        if (!manualFocus && afMacroOk && afAutoOk) {
+            box.addView(label("AUTOFOCUS (QUESTO TELEFONO NON HA IL FUOCO MANUALE)"))
+            fun setAf(n: Boolean) {
+                afNormal = n
+                prefs.edit().putBoolean("afnormal", n).apply()
+                update()
+                triggerAf()
+                fillSettings(box)
+            }
+            box.addView(row(btn("Macro", !afNormal) { setAf(false) }, btn("Normale", afNormal) { setAf(true) }))
+            box.addView(TextView(this).apply {
+                text = "Se con la macro il fuoco non si aggancia da vicino, prova «Normale»."
+                setTextColor(0xFF9A9AA0.toInt()); textSize = 11f; setPadding(0, dp(4), 0, 0)
+            })
+        }
 
         box.addView(label("SCATTO A RUMORE VOCALE"))
         box.addView(row(
