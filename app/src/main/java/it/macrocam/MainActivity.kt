@@ -84,7 +84,7 @@ private const val MP = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WC = ViewGroup.LayoutParams.WRAP_CONTENT
 private val GREEN = 0xFF1FE01F.toInt()
 // Cambia questo numero a ogni modifica: compare nelle impostazioni e dice subito quale versione è installata.
-private const val BUILD_TAG = "build 12 · scatto da anteprima"
+private const val BUILD_TAG = "build 13 · anteprima più grande"
 private val MULS = floatArrayOf(1f, 0.7f, 0.55f)   // moltiplicatori della distanza minima di fuoco
 
 /** Slider verticale. f = 0 in alto, 1 in basso. shutterLook = aspetto da pulsante di scatto (fuoco). */
@@ -444,6 +444,7 @@ class MainActivity : Activity() {
     private var arr = Rect()
     private var jpeg = Size(0, 0)
     private var prev = Size(0, 0)
+    private var prevList = ""
     private var minFocus = 0f
     private var manualFocus = false
     private var afMacroOk = false      // il telefono dichiara CONTROL_AF_MODE_MACRO
@@ -1138,7 +1139,14 @@ class MainActivity : Activity() {
         val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
         jpeg = map.getOutputSizes(ImageFormat.JPEG).maxByOrNull { it.width.toLong() * it.height }!!
         val ar = jpeg.width.toDouble() / jpeg.height
-        val ps = map.getOutputSizes(SurfaceTexture::class.java).filter { it.width <= 1920 }
+        val all = map.getOutputSizes(SurfaceTexture::class.java)
+        // Con lo scatto "da anteprima" su fotocamere LEGACY l'anteprima è la foto: si consente una dimensione più grande
+        val legacy = ch.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL) == CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY
+        val limit = if (prevShot && legacy) 2700 else 1920
+        prevList = all.filter { abs(it.width.toDouble() / it.height - ar) < 0.02 }
+            .sortedByDescending { it.width.toLong() * it.height }.take(4)
+            .joinToString(", ") { "${it.width}×${it.height}" }
+        val ps = all.filter { it.width <= limit }
         prev = ps.filter { abs(it.width.toDouble() / it.height - ar) < 0.02 }
             .maxByOrNull { it.width.toLong() * it.height }
             ?: ps.maxByOrNull { it.width.toLong() * it.height }!!
@@ -1174,7 +1182,8 @@ class MainActivity : Activity() {
         diag = "Fotocamera ID $camId ($lvl) · ${jpeg.width}×${jpeg.height}\n" +
             "Fuoco manuale: " + (if (manualFocus) "sì, minimo dichiarato " + String.format(Locale.US, "%.1f", 100f / minFocus) + " cm" else if (afMacroOk && !(afNormal && afAutoOk)) "NO (uso autofocus macro)" else if (afAutoOk) "NO (uso autofocus a scatto singolo)" else "NO (resta autofocus)") + "\n" +
             "ISO manuale: " + (if (manualOk) "sì ($isoMin–$isoMax)" else "NO") + "  ·  bianco manuale: " + (if (wbOk) "sì" else "NO") + "\n" +
-            "Zone di fuoco supportate: $maxAfRegions"
+            "Zone di fuoco supportate: $maxAfRegions\n" +
+            "Anteprima in uso: ${prev.width}×${prev.height} (4:3 disponibili: $prevList)"
 
         runOnUiThread {
             tv.setAspect(prev.height, prev.width)
@@ -1722,6 +1731,7 @@ class MainActivity : Activity() {
                 afShot = m == 1
                 prevShot = m == 2
                 prefs.edit().putBoolean("afshot", afShot).putBoolean("prevshot", prevShot).apply()
+                if (m == 2) toast("Riapri l'app per usare la risoluzione massima dell'anteprima")
                 fillSettings(box)
             }
             box.addView(row(
