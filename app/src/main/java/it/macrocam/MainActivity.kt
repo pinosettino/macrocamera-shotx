@@ -535,8 +535,31 @@ class MainActivity : Activity() {
     // =====================================================================
     // Ciclo di vita
     // =====================================================================
+    private var showingCrash = false
+
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        val crashF = File(filesDir, "crash.txt")
+        if (crashF.exists()) {
+            val txt = try { crashF.readText() } catch (t: Throwable) { "(illeggibile)" }
+            crashF.delete()
+            showingCrash = true
+            val t = TextView(this)
+            t.text = "ERRORE DELL'ULTIMO AVVIO (fai uno screenshot e mandalo):\n\n" + txt.take(3500)
+            t.textSize = 11f
+            t.setTextColor(Color.WHITE)
+            t.setPadding(24, 48, 24, 24)
+            val sv = ScrollView(this)
+            sv.setBackgroundColor(Color.BLACK)
+            sv.addView(t)
+            setContentView(sv)
+            return
+        }
+        Thread.setDefaultUncaughtExceptionHandler { _, e ->
+            try { crashF.writeText(android.util.Log.getStackTraceString(e)) } catch (t: Throwable) {}
+            android.os.Process.killProcess(android.os.Process.myPid())
+            System.exit(10)
+        }
         prefs = getSharedPreferences("macro", MODE_PRIVATE)
         minMul = MULS[prefs.getInt("minf", 0).coerceIn(0, MULS.size - 1)]
         vmode = prefs.getInt("vmode", 0)
@@ -550,6 +573,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (showingCrash) return
         bgT = HandlerThread("cam").also { it.start() }
         bg = Handler(bgT!!.looper)
         oriL.enable()
@@ -558,6 +582,7 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        if (showingCrash) { super.onPause(); return }
         stopMic()
         oriL.disable()
         ui.removeCallbacks(zoomOffR)
@@ -680,6 +705,7 @@ class MainActivity : Activity() {
         var downZoomed = false
         var dx0 = 0f
         var dy0 = 0f
+        var lastStageTap = 0L
         stage.setOnTouchListener { _, e ->
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -690,8 +716,14 @@ class MainActivity : Activity() {
                 }
                 MotionEvent.ACTION_MOVE -> if (!zoomed && !downZoomed) movePoint(e)
                 MotionEvent.ACTION_UP -> {
-                    if (downZoomed && zoomed && abs(e.x - dx0) < dpf(24) && abs(e.y - dy0) < dpf(24)) zoomOffR.run()
-                    else if (!downZoomed && afAssist) triggerAf()
+                    if (downZoomed && zoomed && abs(e.x - dx0) < dpf(24) && abs(e.y - dy0) < dpf(24)) {
+                        if (afAssist) {
+                            // autofocus macro: un tocco mette a fuoco restando in zoom, due tocchi tolgono lo zoom
+                            val n = System.currentTimeMillis()
+                            if (n - lastStageTap < 450) { lastStageTap = 0L; zoomOffR.run() }
+                            else { lastStageTap = n; triggerAf() }
+                        } else zoomOffR.run()
+                    } else if (!downZoomed && afAssist) triggerAf()
                     downZoomed = false
                 }
             }
@@ -978,7 +1010,10 @@ class MainActivity : Activity() {
             String.format(Locale.US, "%.1f", got) + " cm" + (if (lim) "  ← limitato dal telefono" else "")
     }
 
+    private var zoomHint = false
+
     private fun zoomOn() {
+        if (afAssist && !zoomHint) { zoomHint = true; toast("Tocca = mette a fuoco · doppio tocco = esci dallo zoom") }
         zoomed = true
         ui.removeCallbacks(zoomOffR)
         updateReticle()
@@ -1114,7 +1149,7 @@ class MainActivity : Activity() {
             reticle.setAspect(prev.height, prev.width)
             wb.alpha = if (wbOk) 1f else 0.35f
             styleIso()
-            sl.showDot = manualFocus
+            sl.showDot = manualFocus || afMacroOk
             updateEnds()
             onFocus(sl.f, false)
             onExp(ex.f)
