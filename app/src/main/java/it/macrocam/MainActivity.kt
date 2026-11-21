@@ -83,6 +83,8 @@ import kotlin.math.sqrt
 private const val MP = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WC = ViewGroup.LayoutParams.WRAP_CONTENT
 private val GREEN = 0xFF1FE01F.toInt()
+// Cambia questo numero a ogni modifica: compare nelle impostazioni e dice subito quale versione è installata.
+private const val BUILD_TAG = "build 12 · scatto da anteprima"
 private val MULS = floatArrayOf(1f, 0.7f, 0.55f)   // moltiplicatori della distanza minima di fuoco
 
 /** Slider verticale. f = 0 in alto, 1 in basso. shutterLook = aspetto da pulsante di scatto (fuoco). */
@@ -1765,7 +1767,8 @@ class MainActivity : Activity() {
         refreshVoiceDiag()
 
         box.addView(TextView(this).apply {
-            text = "Macrocamera by Pino Settino"
+            val vn = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "?" }
+            text = "Macrocamera by Pino Settino\nversione " + vn + " · " + BUILD_TAG
             setTextColor(0xFF8A8A90.toInt()); textSize = 12f; gravity = Gravity.CENTER
             setPadding(0, dp(18), 0, dp(6))
         }, LinearLayout.LayoutParams(MP, WC))
