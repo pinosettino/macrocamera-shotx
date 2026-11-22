@@ -22,6 +22,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PointF
 import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.SurfaceTexture
 import android.graphics.Typeface
@@ -84,7 +85,7 @@ private const val MP = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WC = ViewGroup.LayoutParams.WRAP_CONTENT
 private val GREEN = 0xFF1FE01F.toInt()
 // Cambia questo numero a ogni modifica: compare nelle impostazioni e dice subito quale versione è installata.
-private const val BUILD_TAG = "build 18 · autofocus normale"
+private const val BUILD_TAG = "build 19 · anteprima intera/adattata"
 private val MULS = floatArrayOf(1f, 0.7f, 0.55f)   // moltiplicatori della distanza minima di fuoco
 
 /** Slider verticale. f = 0 in alto, 1 in basso. shutterLook = aspetto da pulsante di scatto (fuoco). */
@@ -284,7 +285,7 @@ class HSlider(c: Context) : View(c) {
 
 /** TextureView che mantiene le proporzioni dell'anteprima. */
 class AutoTex(c: Context) : TextureView(c) {
-    var fillWidth = false   // riempie tutta la larghezza anche se supera l'altezza disponibile
+    var cover = false   // true: riempie tutta l'area tagliando ciò che sporge; false: immagine intera con bande
     private var rw = 0
     private var rh = 0
     fun setAspect(w: Int, h: Int) {
@@ -300,9 +301,32 @@ class AutoTex(c: Context) : TextureView(c) {
             setMeasuredDimension(w, h)
             return
         }
-        if (fillWidth) setMeasuredDimension(w, (w.toLong() * rh / rw).toInt())
-        else if (w.toLong() * rh < h.toLong() * rw) setMeasuredDimension(w, w * rh / rw)
+        if (cover) {
+            if (w.toLong() * rh < h.toLong() * rw) setMeasuredDimension((h.toLong() * rw / rh).toInt(), h)
+            else setMeasuredDimension(w, (w.toLong() * rh / rw).toInt())
+        } else if (w.toLong() * rh < h.toLong() * rw) setMeasuredDimension(w, w * rh / rw)
         else setMeasuredDimension(h * rw / rh, h)
+    }
+}
+
+/** Ingranaggio delle impostazioni, disegnato (il glifo di testo cambia forma e dimensione da telefono a telefono). */
+class GearView(c: Context) : View(c) {
+    private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFB4B4B8.toInt(); style = Paint.Style.STROKE }
+    private val tooth = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFB4B4B8.toInt() }
+    private val r = RectF()
+    override fun onDraw(cv: Canvas) {
+        val cx = width / 2f
+        val cy = height / 2f
+        val big = min(width, height) / 2f - 3f * resources.displayMetrics.density
+        ring.strokeWidth = big * 0.34f
+        cv.drawCircle(cx, cy, big * 0.58f, ring)
+        for (i in 0 until 8) {
+            cv.save()
+            cv.rotate(i * 45f, cx, cy)
+            r.set(cx - big * 0.15f, cy - big, cx + big * 0.15f, cy - big * 0.68f)
+            cv.drawRoundRect(r, big * 0.05f, big * 0.05f, tooth)
+            cv.restore()
+        }
     }
 }
 
@@ -355,7 +379,7 @@ class Tri(c: Context, private val left: Boolean) : View(c) {
 
 /** Vista con le stesse proporzioni dell'anteprima. */
 open class AspectView(c: Context) : View(c) {
-    var fillWidth = false   // riempie tutta la larghezza anche se supera l'altezza disponibile
+    var cover = false   // true: riempie tutta l'area tagliando ciò che sporge; false: immagine intera con bande
     private var rw = 0
     private var rh = 0
     fun setAspect(w: Int, h: Int) {
@@ -371,8 +395,10 @@ open class AspectView(c: Context) : View(c) {
             setMeasuredDimension(w, h)
             return
         }
-        if (fillWidth) setMeasuredDimension(w, (w.toLong() * rh / rw).toInt())
-        else if (w.toLong() * rh < h.toLong() * rw) setMeasuredDimension(w, w * rh / rw)
+        if (cover) {
+            if (w.toLong() * rh < h.toLong() * rw) setMeasuredDimension((h.toLong() * rw / rh).toInt(), h)
+            else setMeasuredDimension(w, (w.toLong() * rh / rw).toInt())
+        } else if (w.toLong() * rh < h.toLong() * rw) setMeasuredDimension(w, w * rh / rw)
         else setMeasuredDimension(h * rw / rh, h)
     }
 }
@@ -427,7 +453,7 @@ class MainActivity : Activity() {
     private lateinit var tvIsoVal: TextView   // layout compatto: «ISO: valore»
     private lateinit var tvWbc: TextView      // layout compatto: «WB» (verde = bloccato)
     @Volatile private var compact = false
-    private var fitWidth = true      // impostazione: anteprima a tutta larghezza (true) o a tutta altezza con bande grigie (false)
+    private var coverFit = false      // impostazione: anteprima adattata alla finestra (taglia) o intera con bande grigie
     private val compactSp = ArrayList<View>()   // distanziatori che distribuiscono i comandi nella barra compatta
     @Volatile private var isoSeen = false
     @Volatile private var expSeen = false
@@ -583,7 +609,7 @@ class MainActivity : Activity() {
         prefs = getSharedPreferences("macro", MODE_PRIVATE)
         minMul = MULS[prefs.getInt("minf", 0).coerceIn(0, MULS.size - 1)]
         vmode = prefs.getInt("vmode", 0)
-        fitWidth = prefs.getInt("fit", 0) == 0
+        coverFit = prefs.getInt("fit", 0) == 1
         nSens = prefs.getInt("nsens", 1)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.statusBarColor = Color.BLACK
@@ -659,7 +685,7 @@ class MainActivity : Activity() {
     }
 
     private fun buildUi() {
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK); clipChildren = false; clipToPadding = false }
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK) }
 
         // --- riga 1: impostazioni, ISO, MACRO, tempo ---
         val hdr = LinearLayout(this).apply {
@@ -668,10 +694,7 @@ class MainActivity : Activity() {
             setPadding(dp(6), dp(2), dp(8), 0)
         }
         hdrV = hdr
-        val gear = TextView(this).apply {
-            text = "⚙"; textSize = 24f; setTextColor(0xFFB4B4B8.toInt()); gravity = Gravity.CENTER
-            setOnClickListener { showSettings() }
-        }
+        val gear = GearView(this).apply { setOnClickListener { showSettings() } }
         hdr.addView(gear, LinearLayout.LayoutParams(dp(34), dp(40)))
         val isoLbl = chip("ISO:").apply { setPadding(dp(2), dp(8), dp(4), dp(8)) }
         topChips.add(isoLbl)
@@ -853,12 +876,9 @@ class MainActivity : Activity() {
         bar.addView(center, LinearLayout.LayoutParams(WC, dp(80)))
         bar.addView(View(this), LinearLayout.LayoutParams(0, dp(80), 1f))
         barV = bar
-        // le barre restano sopra l'anteprima quando questa, a tutta larghezza, le sormonta un poco
-        hdr.translationZ = dpf(4)
-        wrow.translationZ = dpf(4)
-        bar.translationZ = dpf(4)
         root.addView(bar, LinearLayout.LayoutParams(MP, WC))
 
+        applyFit()
         setContentView(root)
         root.post { fitHeader() }
         applySide()
@@ -897,16 +917,16 @@ class MainActivity : Activity() {
         }
         updateWbUi()
         barV.setPadding(dp(14), if (c) dp(2) else dp(8), dp(14), if (c) dp(4) else dp(14))
-        val wide = c && fitWidth
-        val shade = if (wide) 0x99000000.toInt() else Color.TRANSPARENT
-        hdrV.setBackgroundColor(shade)
-        barV.setBackgroundColor(shade)
-        stage.setBackgroundColor(if (c && !fitWidth) 0xFF48484C.toInt() else Color.BLACK)
-        tv.fillWidth = wide
-        reticle.fillWidth = wide
+        fitHeader()
+    }
+
+    /** Anteprima: intera (con bande grigie) oppure adattata alla finestra del layout (taglia i bordi). */
+    private fun applyFit() {
+        tv.cover = coverFit
+        reticle.cover = coverFit
+        stage.setBackgroundColor(if (coverFit) Color.BLACK else 0xFF48484C.toInt())
         tv.requestLayout()
         reticle.requestLayout()
-        fitHeader()
     }
 
     private fun refreshCompactChips() {
@@ -1759,16 +1779,17 @@ class MainActivity : Activity() {
             })
         }
 
-        if (compact) {
-            box.addView(label("ANTEPRIMA"))
-            fun setFit(w: Boolean) {
-                fitWidth = w
-                prefs.edit().putInt("fit", if (w) 0 else 1).apply()
-                applyCompact()
-                fillSettings(box)
-            }
-            box.addView(row(btn("Tutta larghezza", fitWidth) { setFit(true) }, btn("Tutta altezza\n(bande grigie)", !fitWidth) { setFit(false) }))
+        box.addView(label("ANTEPRIMA"))
+        fun setFit(c: Boolean) {
+            coverFit = c
+            prefs.edit().putInt("fit", if (c) 1 else 0).apply()
+            applyFit()
+            fillSettings(box)
         }
+        box.addView(row(
+            btn("Mostra intera\n(con bande)", !coverFit) { setFit(false) },
+            btn("Adatta alla finestra\n(taglia i bordi)", coverFit) { setFit(true) }
+        ))
 
         box.addView(label("SCATTO A RUMORE VOCALE"))
         box.addView(row(

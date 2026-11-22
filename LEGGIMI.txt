@@ -1,5 +1,5 @@
 MACROCAMERA by Pino Settino - fotocamera macro per Android (Camera2, nessun browser)
-Versione 2.2 (build 16 - vedi "versione ... build ..." in fondo alle Impostazioni dell'app)
+Versione 2.4 (build 19 - vedi "versione ... build ..." in fondo alle Impostazioni dell'app)
 
 STRUTTURA DEL PROGETTO (attenzione: i due build.gradle.kts sono DIVERSI)
   build.gradle.kts              <- cartella principale: SOLO il blocco plugins (2 righe "apply false")
@@ -44,22 +44,22 @@ FUNZIONI
 - Impostazioni > distanza minima di fuoco: 1.0x / 0.7x / 0.55x della distanza dichiarata dal telefono.
   Misure: Galaxy S9 = 0.55x (sharp a 5.5 cm); Galaxy S20 e HTC U11 = 1.0x (il telefono limita, nitido da ~9 cm).
 - Scatto a rumore vocale (Impostazioni): parte con un suono netto ("pop", "tac"); sensibilita bassa/media/alta.
-- Foto a risoluzione massima, JPEG qualita 100, in Pictures/Macro o nella cartella scelta.
-- Impostazioni > Diagnostica: livello Camera2 (LEGACY/LIMITED/FULL), fuoco/ISO/bianco manuali, zone di fuoco,
-  anteprime disponibili, stato dell'autofocus all'ultimo scatto.
+- Foto a risoluzione massima, JPEG qualita 100, in DCIM/Macro (visibile subito in Google Foto) o nella cartella scelta.
+  Le foto fatte con le versioni precedenti sono in Pictures/Macro.
+- Impostazioni > Diagnostica: versione di Android (API), livello Camera2 (LEGACY/LIMITED/FULL) e fuoco/ISO/bianco manuali,
+  zoom e modalita' di fuoco in uso.
 
 TELEFONI SENZA FUOCO MANUALE (fotocamera Camera2 "LEGACY": Wiko View 2 Go, Huawei Shot X)
-- Non hanno fuoco/ISO/bianco manuali: l'app usa l'autofocus. Con la spunta MACRO attiva si usa l'autofocus
-  macro a scatto singolo: un tocco sull'anteprima mette a fuoco (con lo zoom: un tocco = fuoco,
+- Non hanno fuoco/ISO/bianco manuali: l'app usa l'autofocus. Con la spunta MACRO attiva (finestra di zoom) si usa l'autofocus
+  a scatto singolo: un tocco sull'anteprima mette a fuoco (con lo zoom: un tocco = fuoco,
   due tocchi = esce dallo zoom).
-- Huawei Shot X (Android 5.1): togliendo la spunta MACRO le foto escono nitide a 13 Mpx. Con la spunta
-  il driver blocca la lente a ~7 cm allo scatto.
-- Impostazioni > Autofocus (Macro/Normale) e Scatto (Standard / Rifocus nello scatto / Da anteprima):
-  rimedi per i telefoni che perdono il fuoco allo scatto. "Da anteprima" salva il fotogramma
-  dell'anteprima (risoluzione ridotta, 1280x960 sullo Shot X).
+- Autofocus: sempre "normale" a scatto singolo (AF_MODE_AUTO). La modalita' macro (AF_MODE_MACRO) di questi driver
+  perde il fuoco allo scatto (lente bloccata a ~7 cm): verificato sia sullo Shot X sia sul Wiko.
 - Layout compatto (automatico quando ISO e bianco manuali non esistono): barra in alto con
-  ingranaggio, ISO: valore, BLOCCO WB (verde = bloccato), MACRO, TEMPO: valore; anteprima a tutta
-  larghezza. Se il telefono non comunica ISO o tempo si vede un trattino.
+  ingranaggio, ISO: valore, BLOCCO WB (verde = bloccato), MACRO, TEMPO: valore.
+  Se il telefono non comunica ISO o tempo si vede un trattino.
+- Impostazioni > Anteprima (tutte le fotocamere): "Mostra intera" (predefinito, con bande grigie) oppure
+  "Adatta alla finestra" (riempie lo spazio e taglia i bordi). Gli slider restano dentro la parte visibile.
 
 NOTE
 - Focus peaking provato e tolto: non distingueva bene il fuoco.
