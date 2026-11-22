@@ -11,8 +11,8 @@ android {
         applicationId = "it.macrocam"
         minSdk = 22
         targetSdk = 34
-        versionCode = 3
-        versionName = "2.1-shotx"
+        versionCode = 4
+        versionName = "2.2"
     }
 
     // Firma fissa: ogni build ha la stessa firma, quindi gli aggiornamenti

@@ -1,26 +1,66 @@
 MACROCAMERA by Pino Settino - fotocamera macro per Android (Camera2, nessun browser)
+Versione 2.2 (build 16 - vedi "versione ... build ..." in fondo alle Impostazioni dell'app)
+
+STRUTTURA DEL PROGETTO (attenzione: i due build.gradle.kts sono DIVERSI)
+  build.gradle.kts              <- cartella principale: SOLO il blocco plugins (2 righe "apply false")
+  settings.gradle.kts           <- cartella principale
+  gradle.properties             <- cartella principale
+  .github/workflows/build.yml   <- build automatica su GitHub
+  app/build.gradle.kts          <- QUELLO LUNGO: namespace, minSdk 22, versionCode, versionName, firma
+  app/macrocamera.keystore      <- chiave di firma fissa (NON cancellare / cambiare)
+  app/src/main/AndroidManifest.xml
+  app/src/main/java/it/macrocam/MainActivity.kt   <- tutto il codice dell'app
+  app/src/main/res/             <- icone (mipmap-*), stili e colori
 
 STATO DEL PROGETTO (per riprendere il lavoro)
-- Repository GitHub: pinosettino/cameramacro  (build automatica con Actions -> artefatto MacroCam-apk)
-- File da aggiornare: app/src/main/java/it/macrocam/MainActivity.kt
-  (AndroidManifest.xml in app/src/main solo se cambiano i permessi)
-- Firma fissa (app/macrocamera.keystore, password: macrocamera): dalla versione 2.0 gli aggiornamenti
-  si installano sopra la versione presente. NON cambiare/cancellare il file di chiave, altrimenti
-  bisogna disinstallare di nuovo. Con adb: adb install -r nomefile.apk
+- Repository GitHub: pinosettino/cameramacro (build automatica con Actions -> artefatto MacroCam-apk)
+- Di solito si aggiorna solo MainActivity.kt. Ad ogni modifica alzare BUILD_TAG (in cima al file),
+  cosi' nelle Impostazioni si vede subito se GitHub ha compilato la versione giusta.
+  Per i cambi di versione ufficiale: versionCode / versionName in app/build.gradle.kts.
+- Firma fissa (app/macrocamera.keystore, password: macrocamera): gli aggiornamenti si installano sopra la
+  versione presente. NON cambiare/cancellare il file di chiave, altrimenti bisogna disinstallare di nuovo.
+  Con adb: adb install -r nomefile.apk
 - HTC U11: l'installazione dal telefono fallisce; si installa col PC:
     cd /d C:\adb\platform-tools
     adb uninstall it.macrocam
     adb install camera4.apk        (adb versione 2021, quella nuova non gira su Windows 7)
+
+REGOLA PER ANDROID VECCHI
+- minSdk = 22 (Android 5.1). Le API piu' recenti vanno protette con Build.VERSION.SDK_INT:
+  permessi runtime (checkSelfPermission/requestPermissions: da Android 6) e chiavi Camera2 recenti
+  (es. CONTROL_AWB_LOCK_AVAILABLE: da Android 6) fanno crashare l'app all'istante su Android 5.1.
+- Se l'app crasha all'avvio, al riavvio successivo mostra una schermata nera col testo dell'errore:
+  fare uno screenshot.
+- Icona: icona adattiva in mipmap-anydpi-v26 (Android 8+) + PNG in mipmap-mdpi..xxxhdpi per Android 5-7.
+  Se si cambia l'icona vanno rifatti entrambi.
 
 FUNZIONI
 - Slider fuoco (100 cm -> minimo), luminosita', ISO 50/100/200/400/auto, bilanciamento bianco
   (barra blu-giallo, AUTO / BLOCCATO), MACRO attivabile/disattivabile.
 - Finestra mobile: riquadro che mostra l'area che verra' ingrandita; si sposta toccando o trascinando sull'anteprima.
 - Zoom sulla finestra mentre muovi lo slider del fuoco: resta finche non tocchi lo schermo.
-- Pallino sotto la manopola del fuoco: porta l'ingrandimento da 5x a 10x (al massimo che il telefono permette); ripremendolo si torna a 5x.
-  Toccare lo schermo toglie lo zoom ma il pallino resta com'e'.
+- Pallino sotto la manopola del fuoco: porta l'ingrandimento da 5x al massimo che il telefono permette
+  (10x, o meno: Wiko 8x, Shot X 6.1x); ripremendolo si torna a 5x.
 - Impostazioni > distanza minima di fuoco: 1.0x / 0.7x / 0.55x della distanza dichiarata dal telefono.
   Misure: Galaxy S9 = 0.55x (sharp a 5.5 cm); Galaxy S20 e HTC U11 = 1.0x (il telefono limita, nitido da ~9 cm).
-- (Focus peaking provato e tolto: non distingueva bene il fuoco.)
 - Scatto a rumore vocale (Impostazioni): parte con un suono netto ("pop", "tac"); sensibilita bassa/media/alta.
 - Foto a risoluzione massima, JPEG qualita 100, in Pictures/Macro o nella cartella scelta.
+- Impostazioni > Diagnostica: livello Camera2 (LEGACY/LIMITED/FULL), fuoco/ISO/bianco manuali, zone di fuoco,
+  anteprime disponibili, stato dell'autofocus all'ultimo scatto.
+
+TELEFONI SENZA FUOCO MANUALE (fotocamera Camera2 "LEGACY": Wiko View 2 Go, Huawei Shot X)
+- Non hanno fuoco/ISO/bianco manuali: l'app usa l'autofocus. Con la spunta MACRO attiva si usa l'autofocus
+  macro a scatto singolo: un tocco sull'anteprima mette a fuoco (con lo zoom: un tocco = fuoco,
+  due tocchi = esce dallo zoom).
+- Huawei Shot X (Android 5.1): togliendo la spunta MACRO le foto escono nitide a 13 Mpx. Con la spunta
+  il driver blocca la lente a ~7 cm allo scatto.
+- Impostazioni > Autofocus (Macro/Normale) e Scatto (Standard / Rifocus nello scatto / Da anteprima):
+  rimedi per i telefoni che perdono il fuoco allo scatto. "Da anteprima" salva il fotogramma
+  dell'anteprima (risoluzione ridotta, 1280x960 sullo Shot X).
+- Layout compatto (automatico quando ISO e bianco manuali non esistono): barra in alto con
+  ingranaggio, ISO: valore, BLOCCO WB (verde = bloccato), MACRO, TEMPO: valore; anteprima a tutta
+  larghezza. Se il telefono non comunica ISO o tempo si vede un trattino.
+
+NOTE
+- Focus peaking provato e tolto: non distingueva bene il fuoco.
+- Nessuna dipendenza esterna (niente androidx): tutto con le API di Android.

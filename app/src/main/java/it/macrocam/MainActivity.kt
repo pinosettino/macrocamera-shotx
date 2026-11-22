@@ -84,7 +84,7 @@ private const val MP = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WC = ViewGroup.LayoutParams.WRAP_CONTENT
 private val GREEN = 0xFF1FE01F.toInt()
 // Cambia questo numero a ogni modifica: compare nelle impostazioni e dice subito quale versione è installata.
-private const val BUILD_TAG = "build 15 · barra compatta"
+private const val BUILD_TAG = "build 16 · barra distribuita"
 private val MULS = floatArrayOf(1f, 0.7f, 0.55f)   // moltiplicatori della distanza minima di fuoco
 
 /** Slider verticale. f = 0 in alto, 1 in basso. shutterLook = aspetto da pulsante di scatto (fuoco). */
@@ -427,6 +427,7 @@ class MainActivity : Activity() {
     private lateinit var tvIsoVal: TextView   // layout compatto: «ISO: valore»
     private lateinit var tvWbc: TextView      // layout compatto: «WB» (verde = bloccato)
     @Volatile private var compact = false
+    private val compactSp = ArrayList<View>()   // distanziatori che distribuiscono i comandi nella barra compatta
     @Volatile private var isoSeen = false
     @Volatile private var expSeen = false
     private lateinit var tvMacro: TextView
@@ -697,15 +698,19 @@ class MainActivity : Activity() {
         tvIsoVal = chip("ISO: —").apply { visibility = View.GONE }
         topChips.add(tvIsoVal)
         hdr.addView(tvIsoVal, LinearLayout.LayoutParams(WC, WC).apply { marginStart = dp(4) })
-        tvWbc = chip("WB").apply {
+        fun spacer(): View = View(this).apply { visibility = View.GONE; compactSp.add(this) }
+        hdr.addView(spacer(), LinearLayout.LayoutParams(0, 1, 1f))
+        tvWbc = chip("BLOCCO WB").apply {
             visibility = View.GONE
             setOnClickListener { wbLockBtn = !wbLockBtn; updateWbUi(); update() }
         }
         topChips.add(tvWbc)
         hdr.addView(tvWbc, LinearLayout.LayoutParams(WC, WC).apply { marginStart = dp(4) })
+        hdr.addView(spacer(), LinearLayout.LayoutParams(0, 1, 1f))
         tvMacro = chip("MACRO").apply { setOnClickListener { setMacro(!macroOn) } }
         topChips.add(tvMacro)
         hdr.addView(tvMacro, LinearLayout.LayoutParams(WC, WC).apply { marginStart = dp(8) })
+        hdr.addView(spacer(), LinearLayout.LayoutParams(0, 1, 1f))
         tvTime = chip("1:—").apply { gravity = Gravity.END }
         topChips.add(tvTime)
         hdr.addView(tvTime, LinearLayout.LayoutParams(0, WC, 1f))
@@ -892,6 +897,16 @@ class MainActivity : Activity() {
         tvIsoVal.visibility = if (c) View.VISIBLE else View.GONE
         tvWbc.visibility = if (c) View.VISIBLE else View.GONE
         if (c) { tvTime.text = "TEMPO: —"; refreshCompactChips() }
+        for (v in compactSp) v.visibility = if (c) View.VISIBLE else View.GONE
+        if (c) {
+            tvMacro.layoutParams = LinearLayout.LayoutParams(WC, WC)
+            tvTime.layoutParams = LinearLayout.LayoutParams(WC, WC)
+            tvTime.gravity = Gravity.CENTER
+        } else {
+            tvMacro.layoutParams = LinearLayout.LayoutParams(WC, WC).apply { marginStart = dp(8) }
+            tvTime.layoutParams = LinearLayout.LayoutParams(0, WC, 1f)
+            tvTime.gravity = Gravity.END
+        }
         updateWbUi()
         barV.setPadding(dp(14), if (c) dp(2) else dp(8), dp(14), if (c) dp(4) else dp(14))
         val shade = if (c) 0x99000000.toInt() else Color.TRANSPARENT
@@ -917,7 +932,7 @@ class MainActivity : Activity() {
         if (avail <= 0) return
         val m = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD; textSize = 100f }
         var total = 0f
-        val words = if (compact) arrayOf("ISO: 1600", "WB", "MACRO", "TEMPO: 1:10000")
+        val words = if (compact) arrayOf("ISO: 1600", "BLOCCO WB", "MACRO", "TEMPO: 1:10000")
             else arrayOf("ISO:", "50", "100", "200", "400", "AUTO", "MACRO", "1:10000")
         for (w in words) total += m.measureText(w) / 100f
         val pads = dp(8) * words.size + dp(8)
