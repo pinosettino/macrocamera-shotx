@@ -84,7 +84,7 @@ private const val MP = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WC = ViewGroup.LayoutParams.WRAP_CONTENT
 private val GREEN = 0xFF1FE01F.toInt()
 // Cambia questo numero a ogni modifica: compare nelle impostazioni e dice subito quale versione è installata.
-private const val BUILD_TAG = "build 13 · anteprima più grande"
+private const val BUILD_TAG = "build 15 · barra compatta"
 private val MULS = floatArrayOf(1f, 0.7f, 0.55f)   // moltiplicatori della distanza minima di fuoco
 
 /** Slider verticale. f = 0 in alto, 1 in basso. shutterLook = aspetto da pulsante di scatto (fuoco). */
@@ -284,6 +284,7 @@ class HSlider(c: Context) : View(c) {
 
 /** TextureView che mantiene le proporzioni dell'anteprima. */
 class AutoTex(c: Context) : TextureView(c) {
+    var fillWidth = false   // riempie tutta la larghezza anche se supera l'altezza disponibile
     private var rw = 0
     private var rh = 0
     fun setAspect(w: Int, h: Int) {
@@ -299,7 +300,8 @@ class AutoTex(c: Context) : TextureView(c) {
             setMeasuredDimension(w, h)
             return
         }
-        if (w.toLong() * rh < h.toLong() * rw) setMeasuredDimension(w, w * rh / rw)
+        if (fillWidth) setMeasuredDimension(w, (w.toLong() * rh / rw).toInt())
+        else if (w.toLong() * rh < h.toLong() * rw) setMeasuredDimension(w, w * rh / rw)
         else setMeasuredDimension(h * rw / rh, h)
     }
 }
@@ -353,6 +355,7 @@ class Tri(c: Context, private val left: Boolean) : View(c) {
 
 /** Vista con le stesse proporzioni dell'anteprima. */
 open class AspectView(c: Context) : View(c) {
+    var fillWidth = false   // riempie tutta la larghezza anche se supera l'altezza disponibile
     private var rw = 0
     private var rh = 0
     fun setAspect(w: Int, h: Int) {
@@ -368,7 +371,8 @@ open class AspectView(c: Context) : View(c) {
             setMeasuredDimension(w, h)
             return
         }
-        if (w.toLong() * rh < h.toLong() * rw) setMeasuredDimension(w, w * rh / rw)
+        if (fillWidth) setMeasuredDimension(w, (w.toLong() * rh / rw).toInt())
+        else if (w.toLong() * rh < h.toLong() * rw) setMeasuredDimension(w, w * rh / rw)
         else setMeasuredDimension(h * rw / rh, h)
     }
 }
@@ -420,12 +424,19 @@ class MainActivity : Activity() {
     private lateinit var promptV: LinearLayout
     private lateinit var thumbV: ImageView
     private lateinit var tvTime: TextView
+    private lateinit var tvIsoVal: TextView   // layout compatto: «ISO: valore»
+    private lateinit var tvWbc: TextView      // layout compatto: «WB» (verde = bloccato)
+    @Volatile private var compact = false
+    @Volatile private var isoSeen = false
+    @Volatile private var expSeen = false
     private lateinit var tvMacro: TextView
     private lateinit var tvAuto: TextView
     private lateinit var tvLock: TextView
     private val isoBtns = ArrayList<TextView>()
     private val topChips = ArrayList<TextView>()
     private lateinit var hdrV: LinearLayout
+    private lateinit var wrowV: LinearLayout
+    private lateinit var barV: LinearLayout
     private val ui = Handler(Looper.getMainLooper())
     private var settingsBox: LinearLayout? = null
     private var dlg: AlertDialog? = null
@@ -660,7 +671,7 @@ class MainActivity : Activity() {
     }
 
     private fun buildUi() {
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK) }
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK); clipChildren = false; clipToPadding = false }
 
         // --- riga 1: impostazioni, ISO, MACRO, tempo ---
         val hdr = LinearLayout(this).apply {
@@ -683,6 +694,15 @@ class MainActivity : Activity() {
             topChips.add(t)
             hdr.addView(t)
         }
+        tvIsoVal = chip("ISO: —").apply { visibility = View.GONE }
+        topChips.add(tvIsoVal)
+        hdr.addView(tvIsoVal, LinearLayout.LayoutParams(WC, WC).apply { marginStart = dp(4) })
+        tvWbc = chip("WB").apply {
+            visibility = View.GONE
+            setOnClickListener { wbLockBtn = !wbLockBtn; updateWbUi(); update() }
+        }
+        topChips.add(tvWbc)
+        hdr.addView(tvWbc, LinearLayout.LayoutParams(WC, WC).apply { marginStart = dp(4) })
         tvMacro = chip("MACRO").apply { setOnClickListener { setMacro(!macroOn) } }
         topChips.add(tvMacro)
         hdr.addView(tvMacro, LinearLayout.LayoutParams(WC, WC).apply { marginStart = dp(8) })
@@ -706,6 +726,7 @@ class MainActivity : Activity() {
         topChips.add(tvLock)
         wrow.addView(tvAuto, LinearLayout.LayoutParams(WC, WC).apply { marginStart = dp(8) })
         wrow.addView(tvLock)
+        wrowV = wrow
         root.addView(wrow, LinearLayout.LayoutParams(MP, WC))
 
         // --- area anteprima ---
@@ -838,6 +859,11 @@ class MainActivity : Activity() {
         center.addView(triR, LinearLayout.LayoutParams(dp(40), dp(48)))
         bar.addView(center, LinearLayout.LayoutParams(WC, dp(80)))
         bar.addView(View(this), LinearLayout.LayoutParams(0, dp(80), 1f))
+        barV = bar
+        // le barre restano sopra l'anteprima quando questa, a tutta larghezza, le sormonta un poco
+        hdr.translationZ = dpf(4)
+        wrow.translationZ = dpf(4)
+        bar.translationZ = dpf(4)
         root.addView(bar, LinearLayout.LayoutParams(MP, WC))
 
         setContentView(root)
@@ -852,13 +878,49 @@ class MainActivity : Activity() {
     }
 
     /** Calcola un'unica dimensione del testo per le due righe in alto, così stanno sempre nello schermo. */
+    /**
+     * Telefoni senza ISO né bilanciamento del bianco manuali: si nascondono quei comandi e l'anteprima
+     * occupa tutta la larghezza (le barre, semitrasparenti, la sormontano di poco).
+     */
+    private fun applyCompact() {
+        val c = !manualOk && !wbOk
+        val vis = if (c) View.GONE else View.VISIBLE
+        for (t in isoBtns) t.visibility = vis
+        if (topChips.isNotEmpty()) topChips[0].visibility = vis      // etichetta «ISO:»
+        wrowV.visibility = vis
+        compact = c
+        tvIsoVal.visibility = if (c) View.VISIBLE else View.GONE
+        tvWbc.visibility = if (c) View.VISIBLE else View.GONE
+        if (c) { tvTime.text = "TEMPO: —"; refreshCompactChips() }
+        updateWbUi()
+        barV.setPadding(dp(14), if (c) dp(2) else dp(8), dp(14), if (c) dp(4) else dp(14))
+        val shade = if (c) 0x99000000.toInt() else Color.TRANSPARENT
+        hdrV.setBackgroundColor(shade)
+        barV.setBackgroundColor(shade)
+        tv.fillWidth = c
+        reticle.fillWidth = c
+        tv.requestLayout()
+        reticle.requestLayout()
+        fitHeader()
+    }
+
+    private fun refreshCompactChips() {
+        if (!compact) return
+        tvIsoVal.text = "ISO: " + (if (isoSeen) lastIso.toString() else "—")
+        val ns = lastExp
+        tvTime.text = "TEMPO: " + (if (expSeen && ns > 0) "1:" + (1e9 / ns).roundToInt() else "—")
+        tvTime.setTextColor(if (expSeen && ns > 33_333_333L) 0xFFFFB300.toInt() else Color.WHITE)
+    }
+
     private fun fitHeader() {
         val avail = hdrV.width - hdrV.paddingLeft - hdrV.paddingRight - dp(34)
         if (avail <= 0) return
         val m = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD; textSize = 100f }
         var total = 0f
-        for (w in arrayOf("ISO:", "50", "100", "200", "400", "AUTO", "MACRO", "1:10000")) total += m.measureText(w) / 100f
-        val pads = dp(8) * 8 + dp(8)
+        val words = if (compact) arrayOf("ISO: 1600", "WB", "MACRO", "TEMPO: 1:10000")
+            else arrayOf("ISO:", "50", "100", "200", "400", "AUTO", "MACRO", "1:10000")
+        for (w in words) total += m.measureText(w) / 100f
+        val pads = dp(8) * words.size + dp(8)
         val px = ((avail - pads) / total).coerceIn(dpf(9), dpf(13))
         for (t in topChips) t.setTextSize(TypedValue.COMPLEX_UNIT_PX, px)
     }
@@ -959,6 +1021,7 @@ class MainActivity : Activity() {
     }
 
     private fun showTime(ns: Long) {
+        if (compact) { refreshCompactChips(); return }
         if (ns <= 0) return
         tvTime.text = "1:" + (1e9 / ns).roundToInt()
         tvTime.setTextColor(if (ns > 33_333_333L) 0xFFFFB300.toInt() else Color.WHITE)
@@ -1103,6 +1166,7 @@ class MainActivity : Activity() {
         val locked = wbLockBtn || wbShift != 0f
         tvLock.setTextColor(if (locked) GREEN else Color.WHITE)
         tvAuto.setTextColor(if (locked) Color.WHITE else GREEN)
+        tvWbc.setTextColor(if (wbLockBtn) GREEN else Color.WHITE)
     }
 
     // =====================================================================
@@ -1164,7 +1228,7 @@ class MainActivity : Activity() {
         manualOk = caps?.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) == true
         wbOk = caps?.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING) == true
         // CONTROL_AWB_LOCK_AVAILABLE esiste solo da Android 6 (API 23): su 5.1 darebbe NoSuchFieldError
-        awbLockOk = if (Build.VERSION.SDK_INT >= 23) ch.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true else false
+        awbLockOk = if (Build.VERSION.SDK_INT >= 23) ch.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true else true
         ch.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)?.let { isoMin = it.lower; isoMax = it.upper }
         ch.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)?.let { expMin = it.lower; expMax = it.upper }
         aeStep = ch.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toFloat() ?: 0f
@@ -1188,6 +1252,7 @@ class MainActivity : Activity() {
         runOnUiThread {
             tv.setAspect(prev.height, prev.width)
             reticle.setAspect(prev.height, prev.width)
+            applyCompact()
             wb.alpha = if (wbOk) 1f else 0.35f
             styleIso()
             sl.showDot = manualFocus || afModeOk
@@ -1303,8 +1368,8 @@ class MainActivity : Activity() {
         override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, res: TotalCaptureResult) {
             lensMoving = res.get(CaptureResult.LENS_STATE) == CameraMetadata.LENS_STATE_MOVING
             res.get(CaptureResult.CONTROL_AF_STATE)?.let { afState = it }
-            res.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { lastExp = it }
-            res.get(CaptureResult.SENSOR_SENSITIVITY)?.let { lastIso = it }
+            res.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { lastExp = it; expSeen = true }
+            res.get(CaptureResult.SENSOR_SENSITIVITY)?.let { lastIso = it; isoSeen = true }
             res.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { gotFocusD = it }
             if (!usedManual) {
                 res.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { baseG = it }
