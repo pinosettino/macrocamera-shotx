@@ -84,7 +84,7 @@ private const val MP = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WC = ViewGroup.LayoutParams.WRAP_CONTENT
 private val GREEN = 0xFF1FE01F.toInt()
 // Cambia questo numero a ogni modifica: compare nelle impostazioni e dice subito quale versione è installata.
-private const val BUILD_TAG = "build 16 · barra distribuita"
+private const val BUILD_TAG = "build 18 · autofocus normale"
 private val MULS = floatArrayOf(1f, 0.7f, 0.55f)   // moltiplicatori della distanza minima di fuoco
 
 /** Slider verticale. f = 0 in alto, 1 in basso. shutterLook = aspetto da pulsante di scatto (fuoco). */
@@ -386,7 +386,7 @@ class Reticle(c: Context) : AspectView(c) {
     private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
 
     override fun onDraw(cv: Canvas) {
-        if (win <= 0f) return
+        if (win <= 0f || win >= 0.98f) return
         val w = width.toFloat()
         val h = height.toFloat()
         val cx = px * w
@@ -427,6 +427,7 @@ class MainActivity : Activity() {
     private lateinit var tvIsoVal: TextView   // layout compatto: «ISO: valore»
     private lateinit var tvWbc: TextView      // layout compatto: «WB» (verde = bloccato)
     @Volatile private var compact = false
+    private var fitWidth = true      // impostazione: anteprima a tutta larghezza (true) o a tutta altezza con bande grigie (false)
     private val compactSp = ArrayList<View>()   // distanziatori che distribuiscono i comandi nella barra compatta
     @Volatile private var isoSeen = false
     @Volatile private var expSeen = false
@@ -456,17 +457,14 @@ class MainActivity : Activity() {
     private var arr = Rect()
     private var jpeg = Size(0, 0)
     private var prev = Size(0, 0)
-    private var prevList = ""
     private var minFocus = 0f
     private var manualFocus = false
     private var afMacroOk = false      // il telefono dichiara CONTROL_AF_MODE_MACRO
     private var afAutoOk = false       // il telefono dichiara CONTROL_AF_MODE_AUTO
     private val afModeOk: Boolean get() = afMacroOk || afAutoOk
-    private var prevShot = false       // impostazione: salva il fotogramma dell'anteprima (a fuoco) invece dello scatto del driver
-    private var afShot = false         // impostazione: rilancia l'autofocus dentro la richiesta di scatto
-    private var afNormal = false       // impostazione: autofocus normale invece di macro (se il telefono ha entrambi)
+    /** Autofocus normale a scatto singolo; la modalità macro dei driver LEGACY perde il fuoco allo scatto. */
     private val afModeVal: Int get() =
-        if (afMacroOk && !(afNormal && afAutoOk)) CameraMetadata.CONTROL_AF_MODE_MACRO else CameraMetadata.CONTROL_AF_MODE_AUTO
+        if (afAutoOk) CameraMetadata.CONTROL_AF_MODE_AUTO else CameraMetadata.CONTROL_AF_MODE_MACRO
     private var maxAfRegions = 0
     @Volatile private var afState = -1
     /** Telefoni senza fuoco manuale (es. fotocamere LEGACY): si usa l'autofocus in modalità macro. */
@@ -530,15 +528,6 @@ class MainActivity : Activity() {
     @Volatile private var nHits = 0
 
     @Volatile private var vShot = "nessuno"
-    @Volatile private var afInfo = "nessuno"
-
-    private fun afName(i: Int?): String = when (i) {
-        0 -> "inattivo"; 1 -> "cerca(passivo)"; 2 -> "a fuoco(passivo)"; 3 -> "cerca"
-        4 -> "A FUOCO"; 5 -> "NON a fuoco"; 6 -> "non a fuoco(passivo)"; null -> "?"; else -> "stato $i"
-    }
-
-    private fun focCm(d: Float?): String =
-        if (d == null) "?" else if (d <= 0.01f) "∞" else String.format(Locale.US, "%.1f cm", 100f / d)
     private var busySince = 0L
     private var voiceDiagTv: TextView? = null
     private val diagTick = object : Runnable {
@@ -594,9 +583,7 @@ class MainActivity : Activity() {
         prefs = getSharedPreferences("macro", MODE_PRIVATE)
         minMul = MULS[prefs.getInt("minf", 0).coerceIn(0, MULS.size - 1)]
         vmode = prefs.getInt("vmode", 0)
-        afNormal = prefs.getBoolean("afnormal", false)
-        afShot = prefs.getBoolean("afshot", false)
-        prevShot = prefs.getBoolean("prevshot", false)
+        fitWidth = prefs.getInt("fit", 0) == 0
         nSens = prefs.getInt("nsens", 1)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.statusBarColor = Color.BLACK
@@ -688,7 +675,7 @@ class MainActivity : Activity() {
         hdr.addView(gear, LinearLayout.LayoutParams(dp(34), dp(40)))
         val isoLbl = chip("ISO:").apply { setPadding(dp(2), dp(8), dp(4), dp(8)) }
         topChips.add(isoLbl)
-        hdr.addView(isoLbl)
+        hdr.addView(isoLbl, LinearLayout.LayoutParams(WC, WC).apply { marginStart = dp(10) })
         for (i in intArrayOf(50, 100, 200, 400, 0)) {
             val t = chip(if (i == 0) "AUTO" else "$i").apply { tag = i; setOnClickListener { setIso(i) } }
             isoBtns.add(t)
@@ -697,7 +684,7 @@ class MainActivity : Activity() {
         }
         tvIsoVal = chip("ISO: —").apply { visibility = View.GONE }
         topChips.add(tvIsoVal)
-        hdr.addView(tvIsoVal, LinearLayout.LayoutParams(WC, WC).apply { marginStart = dp(4) })
+        hdr.addView(tvIsoVal, LinearLayout.LayoutParams(WC, WC).apply { marginStart = dp(10) })
         fun spacer(): View = View(this).apply { visibility = View.GONE; compactSp.add(this) }
         hdr.addView(spacer(), LinearLayout.LayoutParams(0, 1, 1f))
         tvWbc = chip("BLOCCO WB").apply {
@@ -748,6 +735,7 @@ class MainActivity : Activity() {
             override fun onSurfaceTextureUpdated(s: SurfaceTexture) {}
         }
         stage.addView(tv, FrameLayout.LayoutParams(MP, MP, Gravity.CENTER))
+        tv.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> ui.post { fitSliders() } }
 
         // senza zoom: si tocca o si trascina per spostare la finestra; con lo zoom attivo: un tocco lo toglie
         var downZoomed = false
@@ -909,11 +897,13 @@ class MainActivity : Activity() {
         }
         updateWbUi()
         barV.setPadding(dp(14), if (c) dp(2) else dp(8), dp(14), if (c) dp(4) else dp(14))
-        val shade = if (c) 0x99000000.toInt() else Color.TRANSPARENT
+        val wide = c && fitWidth
+        val shade = if (wide) 0x99000000.toInt() else Color.TRANSPARENT
         hdrV.setBackgroundColor(shade)
         barV.setBackgroundColor(shade)
-        tv.fillWidth = c
-        reticle.fillWidth = c
+        stage.setBackgroundColor(if (c && !fitWidth) 0xFF48484C.toInt() else Color.BLACK)
+        tv.fillWidth = wide
+        reticle.fillWidth = wide
         tv.requestLayout()
         reticle.requestLayout()
         fitHeader()
@@ -945,11 +935,28 @@ class MainActivity : Activity() {
         applySide()
     }
 
+    private var insT = 0
+    private var insB = 0
+    private var insL = 0
+    private var insR = 0
+
+    /** Tiene gli slider dentro l'immagine quando questa è più piccola dell'area disponibile. */
+    private fun fitSliders() {
+        if (!::tv.isInitialized || !::stage.isInitialized || tv.width <= 0 || stage.width <= 0) return
+        val t = max(0, tv.top)
+        val b = max(0, stage.height - tv.bottom)
+        val l = max(0, tv.left)
+        val r = max(0, stage.width - tv.right)
+        if (t == insT && b == insB && l == insL && r == insR) return
+        insT = t; insB = b; insL = l; insR = r
+        applySide()
+    }
+
     private fun applySide() {
         val left = prefs.getString("side", "l") == "l"
         fun lp(w: Int, m: Int) = FrameLayout.LayoutParams(dp(w), MP, if (left) Gravity.START else Gravity.END).apply {
-            topMargin = dp(8); bottomMargin = dp(8)
-            if (left) leftMargin = dp(m) else rightMargin = dp(m)
+            topMargin = dp(8) + insT; bottomMargin = dp(8) + insB
+            if (left) leftMargin = dp(m) + insL else rightMargin = dp(m) + insR
         }
         sl.layoutParams = lp(64, 70)
         ex.layoutParams = lp(52, 8)
@@ -1102,7 +1109,7 @@ class MainActivity : Activity() {
     }
 
     private fun focusLine(): String {
-        if (!manualFocus) return if (afMacroOk && !(afNormal && afAutoOk)) "Fuoco: autofocus macro (tocca per mettere a fuoco)" else if (afAutoOk) "Fuoco: autofocus a scatto singolo (tocca per mettere a fuoco)" else "Fuoco: autofocus"
+        if (!manualFocus) return if (afModeOk) "Fuoco: autofocus a scatto singolo (tocca per mettere a fuoco)" else "Fuoco: autofocus"
         val req = if (focusD > 0f) 100f / focusD else 0f
         val got = if (gotFocusD > 0f) 100f / gotFocusD else 0f
         val lim = focusD > minFocus * 1.02f && gotFocusD < focusD * 0.97f
@@ -1218,14 +1225,7 @@ class MainActivity : Activity() {
         val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
         jpeg = map.getOutputSizes(ImageFormat.JPEG).maxByOrNull { it.width.toLong() * it.height }!!
         val ar = jpeg.width.toDouble() / jpeg.height
-        val all = map.getOutputSizes(SurfaceTexture::class.java)
-        // Con lo scatto "da anteprima" su fotocamere LEGACY l'anteprima è la foto: si consente una dimensione più grande
-        val legacy = ch.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL) == CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY
-        val limit = if (prevShot && legacy) 2700 else 1920
-        prevList = all.filter { abs(it.width.toDouble() / it.height - ar) < 0.02 }
-            .sortedByDescending { it.width.toLong() * it.height }.take(4)
-            .joinToString(", ") { "${it.width}×${it.height}" }
-        val ps = all.filter { it.width <= limit }
+        val ps = map.getOutputSizes(SurfaceTexture::class.java).filter { it.width <= 1920 }
         prev = ps.filter { abs(it.width.toDouble() / it.height - ar) < 0.02 }
             .maxByOrNull { it.width.toLong() * it.height }
             ?: ps.maxByOrNull { it.width.toLong() * it.height }!!
@@ -1258,11 +1258,10 @@ class MainActivity : Activity() {
             CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_3 -> "LEVEL_3"
             else -> "?"
         }
-        diag = "Fotocamera ID $camId ($lvl) · ${jpeg.width}×${jpeg.height}\n" +
-            "Fuoco manuale: " + (if (manualFocus) "sì, minimo dichiarato " + String.format(Locale.US, "%.1f", 100f / minFocus) + " cm" else if (afMacroOk && !(afNormal && afAutoOk)) "NO (uso autofocus macro)" else if (afAutoOk) "NO (uso autofocus a scatto singolo)" else "NO (resta autofocus)") + "\n" +
-            "ISO manuale: " + (if (manualOk) "sì ($isoMin–$isoMax)" else "NO") + "  ·  bianco manuale: " + (if (wbOk) "sì" else "NO") + "\n" +
-            "Zone di fuoco supportate: $maxAfRegions\n" +
-            "Anteprima in uso: ${prev.width}×${prev.height} (4:3 disponibili: $prevList)"
+        diag = "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n" +
+            "Fotocamera principale ID $camId: Camera2 livello $lvl · ${jpeg.width}×${jpeg.height}\n" +
+            "Fuoco manuale: " + (if (manualFocus) "sì, minimo dichiarato " + String.format(Locale.US, "%.1f", 100f / minFocus) + " cm" else if (afModeOk) "NO (uso autofocus a scatto singolo)" else "NO (resta autofocus)") + "\n" +
+            "ISO manuale: " + (if (manualOk) "sì ($isoMin–$isoMax)" else "NO") + "  ·  bianco manuale: " + (if (wbOk) "sì" else "NO")
 
         runOnUiThread {
             tv.setAspect(prev.height, prev.width)
@@ -1274,6 +1273,7 @@ class MainActivity : Activity() {
             updateEnds()
             onFocus(sl.f, false)
             onExp(ex.f)
+            updateReticle()
             if (!manualFocus) {
                 if (afModeOk) { toast("Niente fuoco manuale: uso l'autofocus. Tocca l'anteprima per mettere a fuoco"); triggerAf() }
                 else toast("Questo telefono non permette il fuoco manuale")
@@ -1483,7 +1483,6 @@ class MainActivity : Activity() {
     }
 
     private fun fire() {
-        if (prevShot) { firePreview(); return }
         try {
             val c = cam ?: throw IllegalStateException("camera chiusa")
             val s = session ?: throw IllegalStateException("sessione chiusa")
@@ -1492,15 +1491,11 @@ class MainActivity : Activity() {
             b.addTarget(rd.surface)
             fill(b, false)
             b.set(CaptureRequest.JPEG_QUALITY, 100.toByte())
-            if (afAssist && afShot) b.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
             lastJpegOri = (sensorOri + devOri) % 360
-            afInfo = "prima dello scatto: " + afName(afState) + ", lente " + focCm(gotFocusD) + (if (shotWasZoomed) " (era in zoom)" else "")
             b.set(CaptureRequest.JPEG_ORIENTATION, lastJpegOri)
             s.capture(b.build(), object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, res: TotalCaptureResult) {
                     if (vShot == "avviato") vShot = "scatto eseguito, salvo…"
-                    afInfo += " → durante: " + afName(res.get(CaptureResult.CONTROL_AF_STATE)) + ", lente " +
-                        focCm(res.get(CaptureResult.LENS_FOCUS_DISTANCE))
                     restoreZoom()
                 }
                 override fun onCaptureFailed(s: CameraCaptureSession, r: CaptureRequest, f: CaptureFailure) {
@@ -1526,36 +1521,6 @@ class MainActivity : Activity() {
         buf.get(bytes)
         img.close()
         finishSave(bytes, lastJpegOri)
-    }
-
-    /** Scatto "da anteprima": salva il fotogramma che si vede (a fuoco), a risoluzione più bassa del sensore. */
-    private fun firePreview() {
-        afInfo = "da anteprima" + (if (shotWasZoomed) " (era in zoom)" else "")
-        ui.post {
-            try {
-                val bm = tv.getBitmap(prev.height, prev.width) ?: throw IllegalStateException("anteprima non disponibile")
-                val rot = devOri
-                restoreZoom()
-                bg?.post {
-                    try {
-                        val m = Matrix().apply { postRotate(rot.toFloat()) }
-                        val out = if (rot != 0) Bitmap.createBitmap(bm, 0, 0, bm.width, bm.height, m, true) else bm
-                        val bos = java.io.ByteArrayOutputStream()
-                        out.compress(Bitmap.CompressFormat.JPEG, 97, bos)
-                        finishSave(bos.toByteArray(), 0)
-                    } catch (e: Exception) {
-                        busy = false
-                        vShot = "errore: ${e.message}"
-                        toast("Scatto: ${e.message}")
-                    }
-                }
-            } catch (e: Exception) {
-                busy = false
-                restoreZoom()
-                vShot = "errore: ${e.message}"
-                toast("Scatto: ${e.message}")
-            }
-        }
     }
 
     private fun finishSave(bytes: ByteArray, ori: Int) {
@@ -1597,7 +1562,7 @@ class MainActivity : Activity() {
                     return doc
                 }
             } catch (e: Exception) {
-                toast("Cartella non accessibile: salvo in Pictures/Macro")
+                toast("Cartella non accessibile: salvo in DCIM/Macro")
             }
         }
 
@@ -1605,7 +1570,7 @@ class MainActivity : Activity() {
             val cv = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, name)
                 put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/Macro")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/Macro")
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
             val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv) ?: return null
@@ -1615,7 +1580,7 @@ class MainActivity : Activity() {
             return uri
         } else {
             @Suppress("DEPRECATION")
-            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "Macro")
+            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Macro")
             dir.mkdirs()
             val f = File(dir, name)
             f.writeBytes(bytes)
@@ -1645,7 +1610,7 @@ class MainActivity : Activity() {
     /** Pannello in tempo reale nelle impostazioni: fuoco richiesto/applicato e, se attivo, il livello del rumore. */
     private fun refreshVoiceDiag() {
         val t = voiceDiagTv ?: return
-        val sb = StringBuilder(focusLine()).append("\n").append(zoomLine()).append("\nUltimo scatto, fuoco: ").append(afInfo)
+        val sb = StringBuilder(focusLine()).append("\n").append(zoomLine())
         if (vmode == 2) {
             val lvl = ((nLevel / max(1f, nThr)) * 10f).roundToInt().coerceIn(0, 10)
             sb.append("\nRumore: ").append("█".repeat(lvl)).append("░".repeat(10 - lvl)).append("  (pieno = scatta)")
@@ -1774,7 +1739,7 @@ class MainActivity : Activity() {
 
         box.addView(label("SALVA LE FOTO IN"))
         val tree = prefs.getString("tree", null)
-        val folder = if (tree == null) "Pictures/Macro (predefinita)" else
+        val folder = if (tree == null) "DCIM/Macro (predefinita)" else
             try { DocumentsContract.getTreeDocumentId(Uri.parse(tree)).substringAfter(':').ifEmpty { "(radice)" } } catch (e: Exception) { "cartella scelta" }
         box.addView(TextView(this).apply { text = folder; setTextColor(Color.WHITE); textSize = 15f })
         box.addView(row(
@@ -1782,47 +1747,27 @@ class MainActivity : Activity() {
             btn("Predefinita", tree == null) { prefs.edit().remove("tree").apply(); fillSettings(box) }
         ))
 
-        box.addView(label("DISTANZA MINIMA DI FUOCO (× QUELLA DICHIARATA DAL TELEFONO)"))
-        val base = if (minFocus > 1f) 100f / minFocus else 0f
-        val names = arrayOf("1.0×", "0.7×", "0.55×")
-        fun mb(i: Int) = btn(names[i] + (if (base > 0f) "\n" + fmtCm(base * MULS[i], false) + " cm" else ""), minMul == MULS[i]) { setMinMul(i) }
-        box.addView(row(mb(0), mb(1), mb(2)))
-        box.addView(TextView(this).apply {
-            text = "Alcuni telefoni (es. Galaxy S9) vanno oltre il valore dichiarato, altri lo limitano: controlla la riga «Fuoco»."
-            setTextColor(0xFF9A9AA0.toInt()); textSize = 11f; setPadding(0, dp(4), 0, 0)
-        })
+        if (manualFocus) {
+            box.addView(label("DISTANZA MINIMA DI FUOCO (× QUELLA DICHIARATA DAL TELEFONO)"))
+            val base = if (minFocus > 1f) 100f / minFocus else 0f
+            val names = arrayOf("1.0×", "0.7×", "0.55×")
+            fun mb(i: Int) = btn(names[i] + (if (base > 0f) "\n" + fmtCm(base * MULS[i], false) + " cm" else ""), minMul == MULS[i]) { setMinMul(i) }
+            box.addView(row(mb(0), mb(1), mb(2)))
+            box.addView(TextView(this).apply {
+                text = "Alcuni telefoni (es. Galaxy S9) vanno oltre il valore dichiarato, altri lo limitano: controlla la riga «Fuoco»."
+                setTextColor(0xFF9A9AA0.toInt()); textSize = 11f; setPadding(0, dp(4), 0, 0)
+            })
+        }
 
-        if (!manualFocus && afMacroOk && afAutoOk) {
-            box.addView(label("AUTOFOCUS (QUESTO TELEFONO NON HA IL FUOCO MANUALE)"))
-            fun setAf(n: Boolean) {
-                afNormal = n
-                prefs.edit().putBoolean("afnormal", n).apply()
-                update()
-                triggerAf()
+        if (compact) {
+            box.addView(label("ANTEPRIMA"))
+            fun setFit(w: Boolean) {
+                fitWidth = w
+                prefs.edit().putInt("fit", if (w) 0 else 1).apply()
+                applyCompact()
                 fillSettings(box)
             }
-            box.addView(row(btn("Macro", !afNormal) { setAf(false) }, btn("Normale", afNormal) { setAf(true) }))
-            box.addView(TextView(this).apply {
-                text = "Se con la macro il fuoco non si aggancia da vicino, prova «Normale»."
-                setTextColor(0xFF9A9AA0.toInt()); textSize = 11f; setPadding(0, dp(4), 0, 0)
-            })
-            box.addView(label("SCATTO: SE LA FOTO ESCE SFOCATA ANCHE CON ANTEPRIMA A FUOCO"))
-            fun setShot(m: Int) {
-                afShot = m == 1
-                prevShot = m == 2
-                prefs.edit().putBoolean("afshot", afShot).putBoolean("prevshot", prevShot).apply()
-                if (m == 2) toast("Riapri l'app per usare la risoluzione massima dell'anteprima")
-                fillSettings(box)
-            }
-            box.addView(row(
-                btn("Standard", !afShot && !prevShot) { setShot(0) },
-                btn("Rifocus nello scatto", afShot) { setShot(1) },
-                btn("Da anteprima", prevShot) { setShot(2) }
-            ))
-            box.addView(TextView(this).apply {
-                text = "«Da anteprima» salva ciò che vedi (a fuoco) ma a risoluzione ridotta, circa " + prev.height + "×" + prev.width + "."
-                setTextColor(0xFF9A9AA0.toInt()); textSize = 11f; setPadding(0, dp(4), 0, 0)
-            })
+            box.addView(row(btn("Tutta larghezza", fitWidth) { setFit(true) }, btn("Tutta altezza\n(bande grigie)", !fitWidth) { setFit(false) }))
         }
 
         box.addView(label("SCATTO A RUMORE VOCALE"))
@@ -1838,12 +1783,6 @@ class MainActivity : Activity() {
                 btn("Alta", nSens == 2) { nSens = 2; prefs.edit().putInt("nsens", 2).apply(); fillSettings(box) }
             ))
         }
-
-        box.addView(label("FORMATO"))
-        box.addView(TextView(this).apply {
-            text = "Massima risoluzione del sensore, JPEG a qualità 100"
-            setTextColor(Color.WHITE); textSize = 14f
-        })
 
         box.addView(label("DIAGNOSTICA"))
         box.addView(TextView(this).apply {
