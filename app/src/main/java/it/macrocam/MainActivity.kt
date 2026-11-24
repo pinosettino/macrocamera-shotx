@@ -85,7 +85,7 @@ private const val MP = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WC = ViewGroup.LayoutParams.WRAP_CONTENT
 private val GREEN = 0xFF1FE01F.toInt()
 // Cambia questo numero a ogni modifica: compare nelle impostazioni e dice subito quale versione è installata.
-private const val BUILD_TAG = "build 19 · anteprima intera/adattata"
+private const val BUILD_TAG = "build 20 · blocco esposizione + tasto bokeh"
 private val MULS = floatArrayOf(1f, 0.7f, 0.55f)   // moltiplicatori della distanza minima di fuoco
 
 /** Slider verticale. f = 0 in alto, 1 in basso. shutterLook = aspetto da pulsante di scatto (fuoco). */
@@ -98,6 +98,8 @@ class VSlider(c: Context, private val thumbR: Float, private val shutterLook: Bo
     var botText = ""
     var showDot = false
     var dotOn = false
+    var thumbOn = false     // manopola verde = funzione attiva (es. esposizione bloccata)
+    var frozen = false      // manopola bloccata: non si sposta, resta attivo solo il tocco
     var onDot: () -> Unit = {}
     var onChange: (Float) -> Unit = {}
     var onTap: () -> Unit = {}
@@ -159,7 +161,7 @@ class VSlider(c: Context, private val thumbR: Float, private val shutterLook: Bo
             }
         } else {
             p.color = Color.BLACK; cv.drawCircle(x, y, thumbR, p)
-            p.color = Color.WHITE; cv.drawCircle(x, y, thumbR - 3.5f * d, p)
+            p.color = if (thumbOn) GREEN else Color.WHITE; cv.drawCircle(x, y, thumbR - 3.5f * d, p)
             p.textSize = 13 * d
             p.textAlign = Paint.Align.CENTER
             p.color = Color.BLACK
@@ -205,13 +207,18 @@ class VSlider(c: Context, private val thumbR: Float, private val shutterLook: Bo
                 y0 = e.y
                 f0 = f
                 moved = false
-                if (!rel) {
+                if (!rel && !frozen) {
                     setFrom((e.y - padV) / span)
                     onChange(f)
                     invalidate()
                 }
             }
             MotionEvent.ACTION_MOVE -> {
+                if (frozen) {
+                    // bloccato: un trascinamento non sposta nulla e non conta come tocco
+                    if (abs(e.y - y0) >= 8 * d) moved = true
+                    return true
+                }
                 if (rel) {
                     if (!moved && abs(e.y - y0) < 8 * d) return true
                     moved = true
@@ -458,8 +465,8 @@ class MainActivity : Activity() {
     @Volatile private var isoSeen = false
     @Volatile private var expSeen = false
     private lateinit var tvMacro: TextView
-    private lateinit var tvAuto: TextView
     private lateinit var tvLock: TextView
+    private lateinit var tvBokeh: TextView
     private val isoBtns = ArrayList<TextView>()
     private val topChips = ArrayList<TextView>()
     private lateinit var hdrV: LinearLayout
@@ -527,6 +534,11 @@ class MainActivity : Activity() {
     private val P = PointF(0.5f, 0.5f)
     private var wbShift = 0f
     private var wbLockBtn = false
+    private var exLock = false        // esposizione bloccata (manopola verde)
+    private var aeLockOk = false
+    private var bokehOn = false       // scelta dell'utente: BOKEH verde = attivo
+    private var bokehOk = false       // il telefono lo permette: non LEGACY e con fuoco manuale
+    private val bokehActive: Boolean get() = bokehOk && bokehOn
 
     @Volatile private var baseG: RggbChannelVector? = null
     @Volatile private var baseT: ColorSpaceTransform? = null
@@ -610,6 +622,7 @@ class MainActivity : Activity() {
         minMul = MULS[prefs.getInt("minf", 0).coerceIn(0, MULS.size - 1)]
         vmode = prefs.getInt("vmode", 0)
         coverFit = prefs.getInt("fit", 0) == 1
+        bokehOn = prefs.getBoolean("bokeh", false)
         nSens = prefs.getInt("nsens", 1)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.statusBarColor = Color.BLACK
@@ -633,6 +646,7 @@ class MainActivity : Activity() {
         stopMic()
         oriL.disable()
         ui.removeCallbacks(zoomOffR)
+        if (exLock) { exLock = false; applyExLock() }
         closeCamera()
         bgT?.quitSafely()
         bgT = null
@@ -735,12 +749,12 @@ class MainActivity : Activity() {
         wb = HSlider(this)
         wb.onChange = { f -> onWb(f) }
         wrow.addView(wb, LinearLayout.LayoutParams(0, dp(40), 1f))
-        tvAuto = chip("AUTO").apply { setOnClickListener { wbAuto() } }
-        tvLock = chip("BLOCCATO").apply { setOnClickListener { wbLockBtn = true; updateWbUi(); update() } }
-        topChips.add(tvAuto)
+        tvLock = chip("BLOCCATO").apply { setOnClickListener { toggleWbLock() } }
+        tvBokeh = chip("BOKEH").apply { visibility = View.GONE; setOnClickListener { toggleBokeh() } }
         topChips.add(tvLock)
-        wrow.addView(tvAuto, LinearLayout.LayoutParams(WC, WC).apply { marginStart = dp(8) })
-        wrow.addView(tvLock)
+        topChips.add(tvBokeh)
+        wrow.addView(tvLock, LinearLayout.LayoutParams(WC, WC).apply { marginStart = dp(8) })
+        wrow.addView(tvBokeh, LinearLayout.LayoutParams(WC, WC).apply { marginStart = dp(8) })
         wrowV = wrow
         root.addView(wrow, LinearLayout.LayoutParams(MP, WC))
 
@@ -797,7 +811,8 @@ class MainActivity : Activity() {
         sl.onTap = { shoot() }
         sl.onDot = { toggleBig() }
         ex.onChange = { f -> onExp(f) }
-        ex.onDouble = { ex.f = 0.5f; onExp(0.5f); ex.invalidate() }
+        ex.onTap = { toggleExLock() }
+        ex.onDouble = { if (!exLock) { ex.f = 0.5f; onExp(0.5f); ex.invalidate() } }
         stage.addView(sl)
         stage.addView(ex)
         reticle = Reticle(this)
@@ -884,6 +899,7 @@ class MainActivity : Activity() {
         applySide()
         styleIso()
         updateWbUi()
+        applyBokeh()
         setMacro(true)
         onExp(0.5f)
         onFocus(0f, false)
@@ -900,7 +916,10 @@ class MainActivity : Activity() {
         val vis = if (c) View.GONE else View.VISIBLE
         for (t in isoBtns) t.visibility = vis
         if (topChips.isNotEmpty()) topChips[0].visibility = vis      // etichetta «ISO:»
-        wrowV.visibility = vis
+        wb.visibility = vis
+        tvLock.visibility = vis
+        wrowV.visibility = if (!c || bokehOk) View.VISIBLE else View.GONE
+        wrowV.gravity = if (c) Gravity.CENTER_VERTICAL or Gravity.END else Gravity.CENTER_VERTICAL
         compact = c
         tvIsoVal.visibility = if (c) View.VISIBLE else View.GONE
         tvWbc.visibility = if (c) View.VISIBLE else View.GONE
@@ -1176,6 +1195,7 @@ class MainActivity : Activity() {
             val t = lastExp.toDouble() * lastIso / i
             t0 = if (expMax > expMin) t.coerceIn(expMin.toDouble(), expMax.toDouble()) else t
         }
+        if (exLock) { exLock = false; applyExLock() }
         isoVal = i
         ex.f = 0.5f
         if (i == 0) tvTime.text = "1:—"
@@ -1207,8 +1227,43 @@ class MainActivity : Activity() {
     private fun updateWbUi() {
         val locked = wbLockBtn || wbShift != 0f
         tvLock.setTextColor(if (locked) GREEN else Color.WHITE)
-        tvAuto.setTextColor(if (locked) Color.WHITE else GREEN)
         tvWbc.setTextColor(if (wbLockBtn) GREEN else Color.WHITE)
+    }
+
+    /** BLOCCATO: bianco = automatico, verde = bloccato (o regolato a mano). Un tocco alterna; sbloccando si torna all'automatico. */
+    private fun toggleWbLock() {
+        val locked = wbLockBtn || wbShift != 0f
+        if (locked) wbAuto() else { wbLockBtn = true; updateWbUi(); update() }
+    }
+
+    /** Un tocco sulla manopola dell'esposizione: bianco = libera, verde = bloccata. */
+    private fun toggleExLock() {
+        if (!exLock && isoVal == 0 && !aeLockOk) {
+            toast("Questo telefono non permette di bloccare l'esposizione")
+            return
+        }
+        exLock = !exLock
+        applyExLock()
+        update()
+    }
+
+    private fun applyExLock() {
+        ex.frozen = exLock
+        ex.thumbOn = exLock
+        ex.invalidate()
+    }
+
+    /** BOKEH: bianco = spento, verde = acceso. Il tasto compare solo sui telefoni che lo permettono. */
+    private fun toggleBokeh() {
+        if (!bokehOk) return
+        bokehOn = !bokehOn
+        prefs.edit().putBoolean("bokeh", bokehOn).apply()
+        applyBokeh()
+    }
+
+    private fun applyBokeh() {
+        tvBokeh.visibility = if (bokehOk) View.VISIBLE else View.GONE
+        tvBokeh.setTextColor(if (bokehActive) GREEN else Color.WHITE)
     }
 
     // =====================================================================
@@ -1264,6 +1319,7 @@ class MainActivity : Activity() {
         wbOk = caps?.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING) == true
         // CONTROL_AWB_LOCK_AVAILABLE esiste solo da Android 6 (API 23): su 5.1 darebbe NoSuchFieldError
         awbLockOk = if (Build.VERSION.SDK_INT >= 23) ch.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true else true
+        aeLockOk = if (Build.VERSION.SDK_INT >= 23) ch.get(CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE) == true else true
         ch.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)?.let { isoMin = it.lower; isoMax = it.upper }
         ch.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)?.let { expMin = it.lower; expMax = it.upper }
         aeStep = ch.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toFloat() ?: 0f
@@ -1271,6 +1327,8 @@ class MainActivity : Activity() {
             aeIdxMin = it.lower; aeIdxMax = it.upper
             aeMin = it.lower * aeStep; aeMax = it.upper * aeStep
         }
+        val legacy = ch.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL) == CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY
+        bokehOk = !legacy && manualFocus     // sui LEGACY il bokeh non funzionerebbe: il tasto non compare
         val lvl = when (ch.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)) {
             CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY -> "LEGACY"
             CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED -> "LIMITED"
@@ -1281,12 +1339,14 @@ class MainActivity : Activity() {
         diag = "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n" +
             "Fotocamera principale ID $camId: Camera2 livello $lvl · ${jpeg.width}×${jpeg.height}\n" +
             "Fuoco manuale: " + (if (manualFocus) "sì, minimo dichiarato " + String.format(Locale.US, "%.1f", 100f / minFocus) + " cm" else if (afModeOk) "NO (uso autofocus a scatto singolo)" else "NO (resta autofocus)") + "\n" +
-            "ISO manuale: " + (if (manualOk) "sì ($isoMin–$isoMax)" else "NO") + "  ·  bianco manuale: " + (if (wbOk) "sì" else "NO")
+            "ISO manuale: " + (if (manualOk) "sì ($isoMin–$isoMax)" else "NO") + "  ·  bianco manuale: " + (if (wbOk) "sì" else "NO") + "\n" +
+            "Bokeh: " + (if (bokehOk) "disponibile" else if (legacy) "NO (livello LEGACY)" else "NO (senza fuoco manuale)")
 
         runOnUiThread {
             tv.setAspect(prev.height, prev.width)
             reticle.setAspect(prev.height, prev.width)
             applyCompact()
+            applyBokeh()
             wb.alpha = if (wbOk) 1f else 0.35f
             styleIso()
             sl.showDot = manualFocus || afModeOk
@@ -1376,6 +1436,7 @@ class MainActivity : Activity() {
             b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
             val idx = if (aeStep > 0f) (exEv / aeStep).roundToInt().coerceIn(aeIdxMin, aeIdxMax) else 0
             b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, idx)
+            if (exLock && aeLockOk) b.set(CaptureRequest.CONTROL_AE_LOCK, true)
         } else {
             b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
             b.set(CaptureRequest.SENSOR_SENSITIVITY, isoVal)
