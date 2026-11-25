@@ -13,6 +13,11 @@ android {
         targetSdk = 34
         versionCode = 6
         versionName = "2.4"
+
+        // Solo le architetture dei telefoni reali: l'app resta più piccola (OpenCV porta le sue librerie native)
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     // Firma fissa: ogni build ha la stessa firma, quindi gli aggiornamenti
@@ -33,4 +38,9 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+}
+
+dependencies {
+    // OpenCV per Android (da Maven Central): serve all'elaborazione del bokeh
+    implementation("org.opencv:opencv:4.9.0")
 }
