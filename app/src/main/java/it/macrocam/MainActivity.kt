@@ -50,6 +50,7 @@ import android.os.Environment
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Size
@@ -74,6 +75,8 @@ import java.text.SimpleDateFormat
 import java.util.ArrayList
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
+import org.opencv.android.OpenCVLoader
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -85,7 +88,9 @@ private const val MP = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WC = ViewGroup.LayoutParams.WRAP_CONTENT
 private val GREEN = 0xFF1FE01F.toInt()
 // Cambia questo numero a ogni modifica: compare nelle impostazioni e dice subito quale versione è installata.
-private const val BUILD_TAG = "build 20 · blocco esposizione + tasto bokeh"
+private const val BUILD_TAG = "build 22 · bokeh: elaborazione in background"
+private const val BOKEH_GAP_D = 2f          // sotto questa distanza (in diottrie) tra fuoco scelto e minimo il bokeh non serve
+private const val BOKEH_SETTLE_MS = 400L   // attesa perché l'obiettivo raggiunga il nuovo fuoco
 private val MULS = floatArrayOf(1f, 0.7f, 0.55f)   // moltiplicatori della distanza minima di fuoco
 
 /** Slider verticale. f = 0 in alto, 1 in basso. shutterLook = aspetto da pulsante di scatto (fuoco). */
@@ -337,6 +342,37 @@ class GearView(c: Context) : View(c) {
     }
 }
 
+/** Arco che gira sulla miniatura mentre il bokeh è in elaborazione; con più sequenze in coda mostra il numero. */
+class BusyArc(c: Context) : View(c) {
+    var count = 0
+    private val d = c.resources.displayMetrics.density
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val r = RectF()
+
+    override fun onDraw(cv: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        p.style = Paint.Style.FILL
+        p.color = 0x99000000.toInt()
+        cv.drawRoundRect(0f, 0f, w, h, 6 * d, 6 * d, p)
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = 3 * d
+        p.strokeCap = Paint.Cap.ROUND
+        p.color = Color.WHITE
+        val m = 12 * d
+        r.set(m, m, w - m, h - m)
+        val a = (SystemClock.uptimeMillis() % 900L) / 900f * 360f
+        cv.drawArc(r, a, 100f, false, p)
+        if (count > 1) {
+            p.style = Paint.Style.FILL
+            p.textSize = 13 * d
+            p.textAlign = Paint.Align.CENTER
+            cv.drawText(count.toString(), w / 2, h / 2 + p.textSize / 3, p)
+        }
+        postInvalidateOnAnimation()
+    }
+}
+
 class Shutter(c: Context) : View(c) {
     private var down = false
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -540,6 +576,17 @@ class MainActivity : Activity() {
     private var bokehOk = false       // il telefono lo permette: non LEGACY e con fuoco manuale
     private val bokehActive: Boolean get() = bokehOk && bokehOn
 
+    // ---- sequenza bokeh: l'utente scatta la nitida, l'app fa da sola intermedia e vicina ----
+    @Volatile private var seqStep = 0        // 0 = scatto normale; 1, 2, 3 = foto della sequenza in corso
+    @Volatile private var seqLock = false    // durante la sequenza esposizione e bianco restano fissi
+    private var seqStamp = ""                // nome comune alle tre foto
+    private var seqFocus0 = 0f               // fuoco scelto dall'utente (foto nitida)
+    private val seqUris = ArrayList<Uri>()   // le tre foto salvate della sequenza
+    private val bokehPending = AtomicInteger(0)   // elaborazioni bokeh in corso o in coda
+    private var bokehH: Handler? = null
+    private lateinit var busyV: BusyArc
+    private lateinit var promptTxt: TextView
+
     @Volatile private var baseG: RggbChannelVector? = null
     @Volatile private var baseT: ColorSpaceTransform? = null
     @Volatile private var usedManual = false
@@ -647,6 +694,8 @@ class MainActivity : Activity() {
         oriL.disable()
         ui.removeCallbacks(zoomOffR)
         if (exLock) { exLock = false; applyExLock() }
+        seqStep = 0
+        seqLock = false
         closeCamera()
         bgT?.quitSafely()
         bgT = null
@@ -835,7 +884,8 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(4), dp(4), dp(4))
             background = GradientDrawable().apply { cornerRadius = dpf(22); setColor(0xF01C1C1E.toInt()) }
         }
-        promptV.addView(TextView(this).apply { text = "Foto salvata"; setTextColor(Color.WHITE); textSize = 14f })
+        promptTxt = TextView(this).apply { text = "Foto salvata"; setTextColor(Color.WHITE); textSize = 14f }
+        promptV.addView(promptTxt)
         promptV.addView(TextView(this).apply {
             text = "Apri in Google Foto"; setTextColor(GREEN); textSize = 14f; typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
@@ -877,6 +927,8 @@ class MainActivity : Activity() {
         }
         frame.addView(thumbV, FrameLayout.LayoutParams(MP, MP))
         pile.addView(frame, FrameLayout.LayoutParams(dp(50), dp(50), Gravity.TOP or Gravity.END))
+        busyV = BusyArc(this).apply { visibility = View.GONE }
+        pile.addView(busyV, FrameLayout.LayoutParams(dp(50), dp(50), Gravity.TOP or Gravity.END))
         val leftBox = FrameLayout(this)
         leftBox.addView(pile, FrameLayout.LayoutParams(dp(62), dp(62), Gravity.CENTER_VERTICAL or Gravity.START))
         bar.addView(leftBox, LinearLayout.LayoutParams(0, dp(80), 1f))
@@ -1096,6 +1148,7 @@ class MainActivity : Activity() {
         else cm.roundToInt().toString()
 
     private fun onFocus(f: Float, user: Boolean = true) {
+        if (seqStep != 0) return     // sequenza bokeh in corso: il fuoco lo muove l'app
         focusD = when {
             !manualFocus -> 0f
             else -> 1f + f * (effMin - 1f)
@@ -1436,7 +1489,7 @@ class MainActivity : Activity() {
             b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
             val idx = if (aeStep > 0f) (exEv / aeStep).roundToInt().coerceIn(aeIdxMin, aeIdxMax) else 0
             b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, idx)
-            if (exLock && aeLockOk) b.set(CaptureRequest.CONTROL_AE_LOCK, true)
+            if ((exLock || seqLock) && aeLockOk) b.set(CaptureRequest.CONTROL_AE_LOCK, true)
         } else {
             b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
             b.set(CaptureRequest.SENSOR_SENSITIVITY, isoVal)
@@ -1455,7 +1508,7 @@ class MainActivity : Activity() {
         } else {
             usedManual = false
             b.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
-            if (wbLockBtn && awbLockOk) b.set(CaptureRequest.CONTROL_AWB_LOCK, true)
+            if ((wbLockBtn || seqLock) && awbLockOk) b.set(CaptureRequest.CONTROL_AWB_LOCK, true)
         }
         if (zoom && macroOn) b.set(CaptureRequest.SCALER_CROP_REGION, cropFor(zoomF))
     }
@@ -1548,6 +1601,17 @@ class MainActivity : Activity() {
         vShot = "avviato"
         flashV.alpha = 0.7f
         flashV.animate().alpha(0f).setDuration(250).start()
+        if (bokehActive && macroOn && manualFocus) {
+            if (effMin - focusD >= BOKEH_GAP_D) {
+                seqStep = 1
+                seqFocus0 = focusD
+                seqUris.clear()
+                seqStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                seqLock = true
+                toast("Bokeh: tieni fermo il telefono (3 foto)")
+                update()      // porta nell'anteprima il blocco di esposizione e bianco
+            } else toast("Fuoco già vicino al minimo: foto normale, senza bokeh")
+        }
         if (afAssist && zoomed) {
             // con lo zoom attivo lo scatto è a campo intero e il driver rifocalizza: si scatta nelle stesse condizioni
             // in cui senza zoom la foto è nitida (fuori zoom, fuoco preso sul punto della finestra)
@@ -1556,11 +1620,31 @@ class MainActivity : Activity() {
             updateReticle()
             update()
         }
-        bg?.postDelayed({ focusThenFire() }, if (shotWasZoomed) 300L else 0L)
+        bg?.postDelayed({ focusThenFire() }, if (shotWasZoomed) 300L else if (seqStep == 1) 150L else 0L)
     }
 
     private fun waitLens(n: Int) {
         if (lensMoving && n < 10) bg?.postDelayed({ waitLens(n + 1) }, 80) else fire()
+    }
+
+    /**
+     * Sequenza bokeh, passi 2 e 3: fuoco a metà strada (in diottrie, non in centimetri) tra quello scelto e il
+     * minimo, poi fuoco al minimo. Esposizione e bianco restano quelli della prima foto.
+     */
+    private fun nextBokehShot(n: Int) {
+        focusD = if (n == 2) (seqFocus0 + effMin) / 2f else effMin
+        seqStep = n
+        busySince = System.currentTimeMillis()
+        update()     // l'anteprima porta l'obiettivo sul nuovo fuoco
+        ui.postDelayed({ flashV.alpha = 0.5f; flashV.animate().alpha(0f).setDuration(200).start() }, BOKEH_SETTLE_MS)
+        bg?.postDelayed({ waitLens(0) }, BOKEH_SETTLE_MS)
+    }
+
+    /** Fine (o interruzione) della sequenza: sblocca esposizione/bianco e riporta il fuoco dove l'aveva messo l'utente. */
+    private fun endBokehSeq() {
+        seqStep = 0
+        seqLock = false
+        ui.post { onFocus(sl.f, false) }
     }
 
     private fun fire() {
@@ -1581,6 +1665,7 @@ class MainActivity : Activity() {
                 }
                 override fun onCaptureFailed(s: CameraCaptureSession, r: CaptureRequest, f: CaptureFailure) {
                     busy = false
+                    if (seqStep != 0) endBokehSeq()
                     restoreZoom()
                     vShot = "scatto fallito"
                     toast("Scatto non riuscito")
@@ -1588,6 +1673,7 @@ class MainActivity : Activity() {
             }, bg)
         } catch (e: Exception) {
             busy = false
+            if (seqStep != 0) endBokehSeq()
             restoreZoom()
             vShot = "errore: ${e.message}"
             toast("Scatto: ${e.message}")
@@ -1605,17 +1691,79 @@ class MainActivity : Activity() {
     }
 
     private fun finishSave(bytes: ByteArray, ori: Int) {
-        val uri = try { saveJpeg(bytes) } catch (e: Exception) { null }
-        val th = makeThumb(bytes, ori)
-        vShot = if (uri == null) "salvataggio fallito" else "foto salvata"
+        val step = seqStep
+        val uri = try { saveJpeg(bytes, if (step >= 2) "_$step" else "") } catch (e: Exception) { null }
+        val th = if (step <= 1) makeThumb(bytes, ori) else null    // miniatura e «Apri» restano sulla foto nitida
+        vShot = if (uri == null) "salvataggio fallito" else if (step == 0) "foto salvata" else "bokeh: foto $step/3 salvata"
+        if (step != 0 && uri != null) seqUris.add(uri)
+        if (step in 1..2 && uri != null) {
+            if (step == 1) runOnUiThread { lastUri = uri; if (th != null) thumbV.setImageBitmap(th) }
+            nextBokehShot(step + 1)
+            return
+        }
+        val stamp = seqStamp
+        val job: List<Uri>? = if (step == 3 && uri != null) ArrayList(seqUris) else null
+        if (step != 0) endBokehSeq()
+        if (job != null) enqueueBokeh(job, stamp, ori)
         runOnUiThread {
             busy = false
             if (uri == null) toast("Salvataggio non riuscito") else {
-                lastUri = uri
-                if (th != null) thumbV.setImageBitmap(th)
+                if (step <= 1) { lastUri = uri; if (th != null) thumbV.setImageBitmap(th) }
+                promptTxt.text = if (step == 3) "Bokeh in elaborazione…" else "Foto salvata"
                 promptV.visibility = View.VISIBLE
                 ui.removeCallbacks(hidePrompt)
                 ui.postDelayed(hidePrompt, 7000)
+            }
+        }
+    }
+
+    // =====================================================================
+    // Bokeh: elaborazione in background (una alla volta, le altre restano in coda)
+    // =====================================================================
+    private fun bokehHandler(): Handler {
+        bokehH?.let { return it }
+        val t = HandlerThread("bokeh", android.os.Process.THREAD_PRIORITY_BACKGROUND)
+        t.start()
+        return Handler(t.looper).also { bokehH = it }
+    }
+
+    private fun updateBokehBusy() {
+        val n = bokehPending.get()
+        busyV.count = n
+        busyV.visibility = if (n > 0) View.VISIBLE else View.GONE
+        busyV.invalidate()
+    }
+
+    /** Elabora le tre foto già salvate e salva il risultato (_bokeh) nella stessa cartella. Si può continuare a scattare. */
+    private fun enqueueBokeh(uris: List<Uri>, stamp: String, ori: Int) {
+        bokehPending.incrementAndGet()
+        ui.post { updateBokehBusy() }
+        bokehHandler().post {
+            var res: Uri? = null
+            var th: Bitmap? = null
+            var err = ""
+            try {
+                if (!OpenCVLoader.initLocal()) throw IllegalStateException("OpenCV non si carica")
+                val jpegs = uris.map { u -> contentResolver.openInputStream(u)!!.use { it.readBytes() } }
+                val out = BokehProcessor.process(jpegs, ori)
+                res = saveJpeg(out, "_bokeh", stamp)
+                th = makeThumb(out, 0)    // il risultato è già raddrizzato
+            } catch (e: Throwable) {
+                err = e.message ?: e.javaClass.simpleName
+            }
+            bokehPending.decrementAndGet()
+            val ru = res
+            val tb = th
+            ui.post {
+                updateBokehBusy()
+                if (ru != null) {
+                    lastUri = ru
+                    if (tb != null) thumbV.setImageBitmap(tb)
+                    promptTxt.text = "Bokeh pronto"
+                    promptV.visibility = View.VISIBLE
+                    ui.removeCallbacks(hidePrompt)
+                    ui.postDelayed(hidePrompt, 7000)
+                } else toast("Bokeh non riuscito: $err")
             }
         }
     }
@@ -1629,8 +1777,11 @@ class MainActivity : Activity() {
         null
     }
 
-    private fun saveJpeg(bytes: ByteArray): Uri? {
-        val name = "MACRO_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".jpg"
+    /** Le tre foto del bokeh hanno lo stesso nome più _2 e _3: in ordine alfabetico sono nitida, intermedia, vicina. */
+    private fun saveJpeg(bytes: ByteArray, suffix: String = "", stampIn: String? = null): Uri? {
+        val stamp = stampIn ?: if (seqStep != 0 && seqStamp.isNotEmpty()) seqStamp
+            else SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val name = "MACRO_" + stamp + suffix + ".jpg"
 
         val tree = prefs.getString("tree", null)
         if (tree != null) {
